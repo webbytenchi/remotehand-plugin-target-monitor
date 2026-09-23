@@ -886,30 +886,6 @@ fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&L
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"reminder":reminder,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
 }
 
-fn sample_target(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],legacy:&LegacyAlertConfig,retention_seconds:u64){
-    let target=monitor.target.clone();
-    let ping=sample_ping(&target);
-    let transition=monitor.record_ping(&ping,retention_seconds);
-    legacy_alert(output,monitor,legacy,transition);
-    for check in target.tcp_checks.iter().filter(|c|c.enabled) {
-        let result=sample_tcp(&target,check);
-        if let Some(ms)=result.latency_ms { monitor.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp,retention_seconds); }
-        evaluate_rules(output,monitor,rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
-        monitor.tcp_results.insert(check.id.clone(),result);
-    }
-    for check in target.http_checks.iter().filter(|c|c.enabled) {
-        let result=sample_http(check);
-        if let Some(ms)=result.response_time_ms { monitor.record_metric(&format!("http:{}.responseTime",check.id),ms,result.timestamp,retention_seconds); }
-        for (field,value) in &result.fields {
-            let source=format!("http:{}.{}",check.id,field);
-            if let Some(v)=numeric(value){monitor.record_metric(&source,v,result.timestamp,retention_seconds);}
-            if let Some(ids)=check.field_alerts.get(field){evaluate_rules(output,monitor,rules,&source,value.clone(),ids);}
-        }
-        if check.detect_changes { evaluate_rules(output,monitor,rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[])); }
-        monitor.http_results.insert(check.id.clone(),result);
-    }
-}
-
 fn source_value(monitor:&TargetMonitor,source:&str)->Value{
     if source=="none"||source.is_empty(){return Value::Null;}
     if source=="target.name"{return Value::String(monitor.target.name.clone());}
@@ -1125,7 +1101,7 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn time_window_excludes_old_topbar_points(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.metric_history.insert("x".into(),vec![MetricRecord{timestamp:now-120000,value:1.0},MetricRecord{timestamp:now,value:2.0}]);let series=graph_series_for(m,"x",60);assert_eq!(series.len(),1);assert_eq!(series[0]["value"],json!(2.0));}
+    #[test] fn time_window_excludes_old_topbar_points(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.metric_history.insert("x".into(),vec![MetricRecord{timestamp:now-120000,value:1.0},MetricRecord{timestamp:now,value:2.0}]);let series=graph_series_for(m,"x",60);let numeric=series.iter().filter(|p|p["value"].as_f64().is_some()).collect::<Vec<_>>();assert_eq!(numeric.len(),1);assert_eq!(numeric[0]["value"],json!(2.0));assert!(series.iter().any(|p|p["value"].is_null()));}
     #[test] fn config_rejects_invalid_monitoring_windows(){let mut c=default_config();c.monitoring.http_interval_seconds=0;assert!(validate_config(&c).is_err());c=default_config();c.monitoring.topbar_history_seconds=5;assert!(validate_config(&c).is_err());}
     #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
     #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
