@@ -779,6 +779,62 @@ fn write_frame_raw<W: Write,T:Serialize>(writer:&mut W,value:&T)->Result<(),Stri
 fn send_outbound(output:&mpsc::Sender<Value>,value:impl Serialize)->Result<(),String>{
     output.send(serde_json::to_value(value).map_err(|e|e.to_string())?).map_err(|_|"plugin output writer stopped".into())
 }
+
+fn parse_public_ip(value:&str)->Option<String>{value.trim().parse::<IpAddr>().ok().map(|address|address.to_string())}
+fn lookup_public_ip()->Result<String,String>{
+    const SERVICES:[&str;2]=["https://api.ipify.org","https://ifconfig.me/ip"];
+    let mut last_error="public IP lookup failed".to_string();
+    for url in SERVICES {
+        match ureq::get(url).timeout(Duration::from_secs(4)).call() {
+            Ok(response)=>match response.into_string() {
+                Ok(body)=>if let Some(address)=parse_public_ip(&body){return Ok(address)}else{last_error=format!("{url} returned an invalid IP address")},
+                Err(error)=>last_error=format!("{url} response failed: {error}"),
+            },
+            Err(error)=>last_error=format!("{url} lookup failed: {error}"),
+        }
+    }
+    Err(last_error)
+}
+fn topbar_selectable_ip(value:&str)->bool{
+    match value.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address))=>!address.is_loopback()&&!address.is_unspecified(),
+        Ok(IpAddr::V6(address))=>!address.is_loopback()&&!address.is_unspecified(),
+        Err(_)=>false,
+    }
+}
+fn interface_topbar_icon(name:&str,family:&str)->&'static str{
+    if family=="ipv6"{return "ipv6";}
+    let lower=name.to_ascii_lowercase();
+    if lower.contains("wi-fi")||lower.contains("wifi")||lower.contains("wireless")||lower.contains("wlan"){"wifi"}
+    else if lower.contains("tailscale")||lower.contains("vpn")||lower.contains("wireguard")||lower.starts_with("wg")||lower.contains("zerotier")||lower.contains("tun")||lower.contains("tap"){"shield"}
+    else{"ethernet"}
+}
+fn interface_topbar_label(name:&str,family:&str)->&'static str{
+    if family=="ipv6"{return "IPv6";}
+    match interface_topbar_icon(name,family){"wifi"=>"Wi-Fi","shield"=>"VPN",_=>"Ethernet / LAN"}
+}
+fn network_identity_topbar_options(identity:&NetworkIdentity)->Vec<Value>{
+    let mut options=Vec::new();
+    if let Some(public_ip)=identity.public_ip.as_deref(){options.push(json!({"key":"public","label":"Public IP","address":public_ip,"detail":"Internet-facing address","icon":"globe"}));}
+    for interface in &identity.interfaces {
+        let name=interface.get("name").and_then(Value::as_str).unwrap_or("Interface");
+        let addresses=interface.get("addresses").and_then(Value::as_array).cloned().unwrap_or_default();
+        for family in ["ipv4","ipv6"] {
+            let address=addresses.iter().find_map(|entry|{
+                let entry_family=entry.get("family").and_then(Value::as_str).unwrap_or("");
+                let address=entry.get("address").and_then(Value::as_str)?;
+                (entry_family==family&&topbar_selectable_ip(address)).then_some(address)
+            });
+            let Some(address)=address else{continue};
+            options.push(json!({"key":format!("interface:{name}:{family}"),"label":interface_topbar_label(name,family),"address":address,"detail":name,"icon":interface_topbar_icon(name,family)}));
+        }
+    }
+    options
+}
+fn network_identity_value(identity:&NetworkIdentity)->Value{
+    json!({"publicIp":identity.public_ip,"publicIpError":identity.public_ip_error,"interfaces":identity.interfaces,"topbarOptions":network_identity_topbar_options(identity)})
+}
+
 fn host_request(input:&mut impl Read, output:&mpsc::Sender<Value>, request_id:&mut u64, method:&'static str, params:Value)->Result<Value,String>{
     let id=*request_id; *request_id+=1;
     send_outbound(output,PluginHostRequest{message_type:"plugin.request",request_id:id,method,params})?;
