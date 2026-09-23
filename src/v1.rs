@@ -473,6 +473,23 @@ impl MonitorStore {
                 if existing.target.address == target.address {
                     let mut monitor = existing.clone();
                     monitor.target = target.clone();
+                    let tcp_ids = target.tcp_checks.iter().map(|c| c.id.as_str()).collect::<Vec<_>>();
+                    let http_ids = target.http_checks.iter().map(|c| c.id.as_str()).collect::<Vec<_>>();
+                    monitor.tcp_results.retain(|id, _| tcp_ids.iter().any(|current| *current == id.as_str()));
+                    monitor.http_results.retain(|id, _| http_ids.iter().any(|current| *current == id.as_str()));
+                    let source_is_current = |source: &str| {
+                        if source == "ping.latency" { return true; }
+                        if let Some(rest) = source.strip_prefix("tcp:") {
+                            return rest.split('.').next().map(|id| tcp_ids.iter().any(|current| *current == id)).unwrap_or(false);
+                        }
+                        if let Some(rest) = source.strip_prefix("http:") {
+                            return rest.split('.').next().map(|id| http_ids.iter().any(|current| *current == id)).unwrap_or(false);
+                        }
+                        true
+                    };
+                    monitor.metric_history.retain(|source, _| source_is_current(source));
+                    monitor.previous_values.retain(|source, _| source_is_current(source));
+                    monitor.active_alerts.retain(|_, alert| source_is_current(&alert.source));
                     next.insert(target.id.clone(), monitor);
                     continue;
                 }
@@ -766,28 +783,38 @@ fn display_value(v:&Value)->String{
     match v {Value::Null=>"—".into(),Value::Bool(b)=>if *b{"Yes".into()}else{"No".into()},Value::Number(n)=>n.as_f64().map(|f|if f.abs()>=100.0{format!("{f:.0}")}else{format!("{f:.1}")}).unwrap_or_else(||n.to_string()),Value::String(s)=>s.chars().take(22).collect(),_=>v.to_string()}
 }
 fn topbar_tone(state:&str)->&'static str{match state{"OFFLINE"=>"danger","DEGRADED"=>"warning","ONLINE"=>"accent",_=>"muted"}}
+fn graph_series_for(m:&TargetMonitor,source:&str)->Vec<Value>{
+    if source=="ping.latency" {
+        let start=m.samples.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
+        return m.samples[start..].iter().map(|p|json!({
+            "value":p.latency_ms,
+            "tone":match p.state.as_str(){"OFFLINE"=>"danger","HIGH LATENCY"=>"warning",_=>"accent"},
+            "color":m.target.graph_color_for_state(&p.state)
+        })).collect();
+    }
+    let graph=m.metric_history.get(source).cloned().unwrap_or_default();
+    let start=graph.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
+    graph[start..].iter().map(|p|json!({"value":p.value,"tone":"accent","color":m.target.graph_normal_color})).collect()
+}
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
         let title=display_value(&source_value(m,&m.target.topbar.title_source));
         let value=display_value(&source_value(m,&m.target.topbar.value_source));
-        let graph=m.metric_history.get(&m.target.topbar.graph_source).cloned().unwrap_or_default();
-        let start=graph.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
-        let series:Vec<Value>=graph[start..].iter().map(|p|json!({"value":p.value,"tone":topbar_tone(m.overall_state()),"color":m.target.graph_color_for_state(m.overall_state())})).collect();
+        let series=graph_series_for(m,&m.target.topbar.graph_source);
         let mut children=vec![];
         if m.target.topbar.title_source!="none"{children.push(json!({"type":"text","label":title,"tone":"muted","color":m.target.target_name_color,"fontSize":9}));}
         if m.target.topbar.value_source!="none"{children.push(json!({"type":"metric","value":value,"tone":topbar_tone(m.overall_state()),"color":m.target.latency_color,"fontSize":14}));}
         if m.target.topbar.graph_source!="none"{children.push(json!({"type":"sparkline","tone":topbar_tone(m.overall_state()),"series":series}));}
         let unread=m.unread_alerts();
-        if unread>0{children.push(json!({"type":"text","label":format!("⚠ {unread}"),"tone":"warning","fontSize":9}));}
+        if unread>0{children.push(json!({"type":"badge","label":unread.to_string(),"tone":"warning","fontSize":9}));}
         json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
     }).collect::<Vec<_>>();
     json!({"items":items})
 }
 fn tray_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.show_in_system_tray).map(|m|{
-        let history=m.metric_history.get(&m.target.topbar.graph_source).or_else(||m.metric_history.get("ping.latency")).cloned().unwrap_or_default();
-        let start=history.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
-        let series:Vec<Value>=history[start..].iter().map(|p|json!({"value":p.value,"tone":topbar_tone(m.overall_state()),"color":m.target.graph_color_for_state(m.overall_state())})).collect();
+        let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
+        let series=graph_series_for(m,source);
         json!({"id":m.target.id,"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
     json!({"items":items})
