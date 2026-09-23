@@ -572,7 +572,7 @@ fn send_outbound(output:&mpsc::Sender<Value>,value:impl Serialize)->Result<(),St
 }
 fn host_request(input:&mut impl Read, output:&mpsc::Sender<Value>, request_id:&mut u64, method:&'static str, params:Value)->Result<Value,String>{
     let id=*request_id; *request_id+=1;
-    send_outbound(output,PluginHostRequest{message_type:"host.request",request_id:id,method,params})?;
+    send_outbound(output,PluginHostRequest{message_type:"plugin.request",request_id:id,method,params})?;
     loop {
         let payload=read_frame(input)?;
         if let Ok(response)=serde_json::from_slice::<HostResponse>(&payload) {
