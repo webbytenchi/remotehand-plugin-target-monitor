@@ -6,9 +6,9 @@ It evolves from the proven RemoteHand Host Monitor v0.6.1 foundation while expan
 
 ## Status
 
-Target Monitor 0.6.1 is the initial baseline in this repository. The v1.0.0 design is the current development target.
+Target Monitor 0.6.1 remains the stable repository baseline. Version 1.0.0 is implemented on the `feature/v1.0.0-target-monitor` development branch and is awaiting local/runtime acceptance before merge or tagging.
 
-The starting codebase is based on the validated Host Monitor v0.6.1 implementation. Existing ICMP/Ping monitoring and alert behavior should remain stable while TCP and HTTP/HTTPS monitoring are added incrementally.
+The v1 implementation preserves the validated ICMP/Ping foundation and adds TCP monitoring, HTTP/HTTPS monitoring, extraction, reusable alert rules, target reports, and configurable one-item-per-target top-bar presentation.
 
 See `V1.0.0-DESIGN.md` for the agreed product design.
 
@@ -49,17 +49,17 @@ Targets may contain multiple TCP checks.
 
 Target Monitor will provide common service presets such as:
 
-- HTTP — 80
-- HTTPS — 443
-- SSH — 22
-- RDP — 3389
-- SMB — 445
-- DNS — 53
-- SMTP — 25
-- IMAP — 143
-- POP3 — 110
-- MySQL — 3306
-- PostgreSQL — 5432
+- HTTP â€” 80
+- HTTPS â€” 443
+- SSH â€” 22
+- RDP â€” 3389
+- SMB â€” 445
+- DNS â€” 53
+- SMTP â€” 25
+- IMAP â€” 143
+- POP3 â€” 110
+- MySQL â€” 3306
+- PostgreSQL â€” 5432
 
 A Custom option will allow an arbitrary service name and port.
 
