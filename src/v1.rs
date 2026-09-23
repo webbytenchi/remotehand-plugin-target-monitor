@@ -542,9 +542,33 @@ impl MonitorStore {
                     };
                     monitor.metric_history.retain(|source, _| source_is_current(source));
                     monitor.previous_values.retain(|source, _| source_is_current(source));
-                    monitor.active_alerts.retain(|_, alert| source_is_current(&alert.source));
+
+                    let rule_ids = config.alert_rules.iter().map(|r| r.id.as_str()).collect::<BTreeSet<_>>();
+                    let assignment_is_current = |source: &str, rule_id: &str| {
+                        if !rule_ids.contains(rule_id) { return false; }
+                        if let Some(rest) = source.strip_prefix("tcp:") {
+                            let Some((check_id, field)) = rest.split_once('.') else { return false; };
+                            if field != "reachable" { return false; }
+                            return target.tcp_checks.iter()
+                                .find(|check| check.id == check_id)
+                                .map(|check| check.alert_rule_ids.iter().any(|id| id == rule_id))
+                                .unwrap_or(false);
+                        }
+                        if let Some(rest) = source.strip_prefix("http:") {
+                            let Some((check_id, field)) = rest.split_once('.') else { return false; };
+                            return target.http_checks.iter()
+                                .find(|check| check.id == check_id)
+                                .and_then(|check| check.field_alerts.get(field))
+                                .map(|ids| ids.iter().any(|id| id == rule_id))
+                                .unwrap_or(false);
+                        }
+                        false
+                    };
+                    monitor.active_alerts.retain(|_, alert| assignment_is_current(&alert.source, &alert.rule_id));
                     monitor.last_generic_alert_at.retain(|key, _| {
-                        key.rsplit_once(':').map(|(source, _)| source_is_current(source)).unwrap_or(true)
+                        key.rsplit_once(':')
+                            .map(|(source, rule_id)| assignment_is_current(source, rule_id))
+                            .unwrap_or(false)
                     });
                     next.insert(target.id.clone(), monitor);
                     continue;
@@ -1090,5 +1114,44 @@ mod tests {
     }
     #[test] fn ping_tracks_last_reachable_and_offline_since(){let mut m=TargetMonitor::new(default_target());m.last_state="NORMAL".into();m.pending_state="NORMAL".into();m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}),3600);let reachable=m.last_reachable_at;assert!(reachable.is_some());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert!(m.offline_since.is_none());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert_eq!(m.last_state,"OFFLINE");assert!(m.offline_since.is_some());assert_eq!(m.last_reachable_at,reachable);m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}),3600);m.record_ping(&json!({"state":"NORMAL","latencyMs":11.0,"packetLossPercent":0.0}),3600);assert_eq!(m.last_state,"NORMAL");assert!(m.offline_since.is_none());assert!(m.last_reachable_at.unwrap()>=reachable.unwrap());}
     #[test] fn replace_config_prunes_removed_tcp_results(){let mut s=MonitorStore::new();let mut c=s.config.clone();c.targets[0].tcp_checks=vec![TcpCheck{id:"keep".into(),name:"Keep".into(),port:80,enabled:true,alert_rule_ids:vec![]},TcpCheck{id:"drop".into(),name:"Drop".into(),port:22,enabled:true,alert_rule_ids:vec![]}];s.replace_config(c.clone());let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.tcp_results.insert("keep".into(),TcpResult{id:"keep".into(),name:"Keep".into(),port:80,reachable:true,latency_ms:Some(1.0),error:None,timestamp:1});m.tcp_results.insert("drop".into(),TcpResult{id:"drop".into(),name:"Drop".into(),port:22,reachable:false,latency_ms:None,error:None,timestamp:1});c.targets[0].tcp_checks.retain(|x|x.id=="keep");s.replace_config(c);let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();assert_eq!(m.tcp_results.len(),1);assert!(m.tcp_results.contains_key("keep"));assert!(!m.tcp_results.contains_key("drop"));}
+    #[test] fn replace_config_prunes_active_alert_when_rule_is_deleted(){
+        let mut s=MonitorStore::new();
+        let mut c=s.config.clone();
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        c.alert_rules.push(rule);
+        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
+        s.replace_config(c.clone());
+        {
+            let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+            m.active_alerts.insert("http:sys.temp:hot".into(),ActiveAlert{key:"http:sys.temp:hot".into(),target_id:DEFAULT_TARGET_ID.into(),rule_id:"hot".into(),rule_name:"Hot".into(),source:"http:sys.temp".into(),current_value:json!(60),since:1,acknowledged:true});
+            m.last_generic_alert_at.insert("http:sys.temp:hot".into(),1);
+        }
+        c.alert_rules.clear();
+        c.targets[0].http_checks[0].field_alerts.clear();
+        s.replace_config(c);
+        let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();
+        assert!(m.active_alerts.is_empty());
+        assert!(m.last_generic_alert_at.is_empty());
+    }
+
+    #[test] fn replace_config_prunes_active_alert_when_source_is_unassigned(){
+        let mut s=MonitorStore::new();
+        let mut c=s.config.clone();
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        c.alert_rules.push(rule);
+        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
+        s.replace_config(c.clone());
+        {
+            let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+            m.active_alerts.insert("http:sys.temp:hot".into(),ActiveAlert{key:"http:sys.temp:hot".into(),target_id:DEFAULT_TARGET_ID.into(),rule_id:"hot".into(),rule_name:"Hot".into(),source:"http:sys.temp".into(),current_value:json!(60),since:1,acknowledged:false});
+            m.last_generic_alert_at.insert("http:sys.temp:hot".into(),1);
+        }
+        c.targets[0].http_checks[0].field_alerts.clear();
+        s.replace_config(c);
+        let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();
+        assert!(m.active_alerts.is_empty());
+        assert!(m.last_generic_alert_at.is_empty());
+    }
+
     #[test] fn ping_graph_series_keeps_offline_samples_and_sample_colors(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.samples=vec![SampleRecord{timestamp:now-2000,latency_ms:Some(12.0),packet_loss_percent:0.0,state:"NORMAL".into()},SampleRecord{timestamp:now-1000,latency_ms:Some(250.0),packet_loss_percent:0.0,state:"HIGH LATENCY".into()},SampleRecord{timestamp:now,latency_ms:None,packet_loss_percent:100.0,state:"OFFLINE".into()}];let series=graph_series_for(m,"ping.latency",60);assert_eq!(series.len(),3);assert_eq!(series[0]["color"],json!(m.target.graph_normal_color));assert_eq!(series[1]["color"],json!(m.target.graph_high_color));assert_eq!(series[2]["color"],json!(m.target.graph_offline_color));assert!(series[2]["value"].is_null());}
 }
