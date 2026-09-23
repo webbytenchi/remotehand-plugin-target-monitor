@@ -1374,6 +1374,22 @@ fn main()->Result<(),String>{
         let request:HostRequest=serde_json::from_slice(&payload).map_err(|e|format!("invalid host.request: {e}"))?;
         if request.message_type!="host.request"{return Err("unexpected host message type".into());}
         let response=match request.method.as_str(){
+            "monitor.network.identity"=>{
+                let interfaces=host_request(&mut input,&output_tx,&mut host_request_id,"network.interfaces",json!({}));
+                match interfaces {
+                    Ok(interfaces)=>{
+                        let (public_ip,public_ip_error)=match lookup_public_ip(){Ok(address)=>(Some(address),None),Err(error)=>(None,Some(error))};
+                        let identity=NetworkIdentity{
+                            public_ip,
+                            public_ip_error,
+                            interfaces:interfaces.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default(),
+                        };
+                        if let Ok(mut guard)=store.lock(){guard.network_identity=identity.clone();let _=emit_surfaces(&output_tx,&guard);}
+                        PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:network_identity_value(&identity),error:String::new()}
+                    }
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
             "monitor.status"=>{let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}}
             "monitor.config.set"=>{
                 let config:Result<StoredConfig,_>=serde_json::from_value(request.params.clone());
