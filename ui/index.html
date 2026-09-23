@@ -241,7 +241,27 @@ document.querySelectorAll("[data-legacy-cooldown]").forEach(el=>el.oninput=()=>{
 document.querySelectorAll("[data-legacy-sound]").forEach(input=>input.onchange=async()=>{const k=input.dataset.legacySound,file=input.files?.[0];if(!file)return;try{a[k].sound=await fileToSound(file);legacyDraftDirty=true;renderLegacy();notice("Sound selected. Click Save alert settings to persist it.","info")}catch(e){notice(String(e),"error")}});
 document.querySelectorAll("[data-clear-legacy]").forEach(b=>b.onclick=()=>{const k=b.dataset.clearLegacy;a[k].sound=null;legacyDraftDirty=true;renderLegacy();notice("Custom sound removed. Click Save alert settings to persist the beep fallback.","info")});
 document.querySelectorAll("[data-test-legacy]").forEach(b=>b.onclick=()=>testLegacyAlert(b.dataset.testLegacy))}
-async function testLegacyAlert(k){const a=legacyAlertsDraft(),r=a[k];if(a.enabled===false)return notice("Alert sounds are disabled.","info");if(!r||r.soundEnabled===false)return notice("Sound is disabled for this event.","info");await playAlert({sound:r.sound||null});notice(r.sound?"Test sound played.":"Test beep played.","info")}
+async function testLegacyAlert(k){
+  const a=legacyAlertsDraft(),r=a[k];
+  if(!r)return;
+  let soundPlayed=false,notificationShown=false;
+  if(a.enabled!==false&&r.soundEnabled!==false){
+    await playAlert({sound:r.sound||null});
+    soundPlayed=true;
+  }
+  if(r.notificationEnabled!==false){
+    const target=(state.config.targets||[]).find(t=>t.showAlertNotifications);
+    if(target){
+      try{
+        const result=await request("monitor.alert.test",{targetId:target.id,kind:k});
+        notificationShown=result?.notified!==false;
+      }catch{}
+    }
+  }
+  if(soundPlayed&&notificationShown)return notice(r.sound?"Test sound and notification sent.":"Test beep and notification sent.","info");
+  if(soundPlayed)return notice(r.sound?"Test sound played.":"Test beep played.","info");
+  if(notificationShown)return notice("Test notification sent.","info");
+}
 function splitDuration(seconds,units){seconds=Number(seconds)||0;for(const unit of units){if(seconds>=unit&&seconds%unit===0)return[seconds/unit,unit]}return[seconds,1]}
 function renderSettings(){
   if(settingsDirty)return;
