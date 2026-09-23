@@ -779,7 +779,7 @@ fn topbar_value(store:&MonitorStore)->Value{
         if m.target.topbar.graph_source!="none"{children.push(json!({"type":"sparkline","tone":topbar_tone(m.overall_state()),"series":series}));}
         let unread=m.unread_alerts();
         if unread>0{children.push(json!({"type":"text","label":format!("⚠ {unread}"),"tone":"warning","fontSize":9}));}
-        json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id,"acknowledgeAlerts":true}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
+        json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
     }).collect::<Vec<_>>();
     json!({"items":items})
 }
@@ -788,7 +788,7 @@ fn tray_value(store:&MonitorStore)->Value{
         let history=m.metric_history.get(&m.target.topbar.graph_source).or_else(||m.metric_history.get("ping.latency")).cloned().unwrap_or_default();
         let start=history.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
         let series:Vec<Value>=history[start..].iter().map(|p|json!({"value":p.value,"tone":topbar_tone(m.overall_state()),"color":m.target.graph_color_for_state(m.overall_state())})).collect();
-        json!({"id":m.target.id,"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id,"acknowledgeAlerts":true}}})
+        json!({"id":m.target.id,"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
     json!({"items":items})
 }
