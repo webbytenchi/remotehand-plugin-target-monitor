@@ -997,7 +997,15 @@ fn emit_native_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,t
             "title":bounded_notification_text(&title,63),
             "body":bounded_notification_text(&body,255),
             "tone":tone,
-            "silent":true
+            "silent":true,
+            "action":{
+                "type":"open-panel",
+                "panel":"target-monitor",
+                "context":{
+                    "targetId":monitor.target.id,
+                    "view":"report"
+                }
+            }
         })
     });
 }
@@ -1272,6 +1280,19 @@ mod tests {
         let tray=tray_value(&s);
         assert_eq!(tray["items"].as_array().unwrap().len(),1);
         assert_eq!(tray["items"][0]["visible"],json!(false));
+    }
+    #[test] fn notification_payload_targets_report_action(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.show_alert_notifications=true;
+        let (tx,rx)=mpsc::channel::<Value>();
+        emit_native_notification(&tx,m,"Target · Alert".into(),"Body".into(),"warning");
+        let event=rx.recv().unwrap();
+        assert_eq!(event["event"],json!("notification.show"));
+        assert_eq!(event["payload"]["action"]["type"],json!("open-panel"));
+        assert_eq!(event["payload"]["action"]["panel"],json!("target-monitor"));
+        assert_eq!(event["payload"]["action"]["context"]["targetId"],json!(DEFAULT_TARGET_ID));
+        assert_eq!(event["payload"]["action"]["context"]["view"],json!("report"));
     }
     #[test] fn notification_text_uses_source_formatting(){
         let mut s=MonitorStore::new();
