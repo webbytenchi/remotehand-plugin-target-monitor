@@ -18,7 +18,8 @@
     "network.inspect",
     "clipboard.write",
     "storage.plugin",
-    "tray.contribute"
+    "tray.contribute",
+    "notifications.show"
   ],
   "contributes": {
     "panels": [
