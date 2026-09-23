@@ -111,7 +111,7 @@ let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,sou
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id=prefix=>prefix+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,8);
 const notice=(m,kind="info")=>{if(kind===true)kind="error";const e=$("notice");$("noticeText").textContent=m||"";e.className="notice"+(kind&&kind!=="info"?" "+kind:"");e.hidden=!m};$("noticeClose").onclick=()=>{const e=$("notice");$("noticeText").textContent="";e.hidden=true};
-const open=id=>$(id).classList.add("open"),close=id=>$(id).classList.remove("open");
+const open=id=>{const backdrop=$(id);backdrop.classList.add("open");requestAnimationFrame(()=>{const modal=backdrop.querySelector(".modal");if(modal)modal.scrollTop=0;const first=backdrop.querySelector("[autofocus],input:not([type=hidden]):not([disabled]),select:not([disabled]),textarea:not([disabled]),button:not([disabled])");if(first)first.focus({preventScroll:true})})},close=id=>$(id).classList.remove("open");
 function cancelModal(modalId){
   close(modalId);
   if(modalId==="targetModal")resetTargetChildEditors();
