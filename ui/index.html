@@ -41,30 +41,28 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
   </div>
 </section>
 <section id="settingsPanel" class="panel">
-  <div class="card">
-    <h2 style="margin-top:0;font-size:16px">Monitoring Engine</h2>
-    <div class="settings-grid">
-      <div class="settings-section">
-        <h3>Sampling intervals</h3>
-        <div class="fields">
-          <div class="field"><label>Ping / ICMP (seconds)</label><input id="settingPingInterval" type="number" min="1" max="3600" step="1"></div>
-          <div class="field"><label>TCP checks (seconds)</label><input id="settingTcpInterval" type="number" min="1" max="3600" step="1"></div>
-          <div class="field"><label>HTTP / HTTPS requests (seconds)</label><input id="settingHttpInterval" type="number" min="1" max="3600" step="1"></div>
-        </div>
-        <p class="muted">Ping, TCP, and HTTP run on independent schedules. Slower HTTP requests do not delay Ping or TCP sampling.</p>
+  <div class="section-title"><h2>Monitoring Engine</h2></div>
+  <div class="settings-grid">
+    <div class="settings-section">
+      <h3>Sampling intervals</h3>
+      <div class="fields">
+        <div class="field"><label>Ping / ICMP (seconds)</label><input id="settingPingInterval" type="number" min="1" max="3600" step="1"></div>
+        <div class="field"><label>TCP checks (seconds)</label><input id="settingTcpInterval" type="number" min="1" max="3600" step="1"></div>
+        <div class="field"><label>HTTP / HTTPS requests (seconds)</label><input id="settingHttpInterval" type="number" min="1" max="3600" step="1"></div>
       </div>
-      <div class="settings-section">
-        <h3>History</h3>
-        <div class="fields">
-          <div class="field"><label>Metric history retention</label><div class="duration-input"><input id="settingHistoryValue" type="number" min="1" step="1"><select id="settingHistoryUnit"><option value="1">seconds</option><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></div></div>
-          <div class="field"><label>Top-bar graph history</label><div class="duration-input"><input id="settingTopbarValue" type="number" min="1" step="1"><select id="settingTopbarUnit"><option value="1">seconds</option><option value="60">minutes</option></select></div></div>
-        </div>
-        <p class="muted">History windows are time-based, so they remain accurate even when probe types use different sampling intervals.</p>
-      </div>
+      <p class="muted">Ping, TCP, and HTTP run on independent schedules. Slower HTTP requests do not delay Ping or TCP sampling.</p>
     </div>
-    <div class="settings-actions"><button id="resetMonitoringSettings" class="btn">Reset to defaults</button><button id="saveMonitoringSettings" class="btn primary">Save Settings</button></div>
-    <p class="muted">Target-specific monitoring configuration lives with each target. RemoteHand core remains generic.</p>
+    <div class="settings-section">
+      <h3>History</h3>
+      <div class="fields">
+        <div class="field"><label>Metric history retention</label><div class="duration-input"><input id="settingHistoryValue" type="number" min="1" step="1"><select id="settingHistoryUnit"><option value="1">seconds</option><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></div></div>
+        <div class="field"><label>Top-bar graph history</label><div class="duration-input"><input id="settingTopbarValue" type="number" min="1" step="1"><select id="settingTopbarUnit"><option value="1">seconds</option><option value="60">minutes</option></select></div></div>
+      </div>
+      <p class="muted">History windows are time-based, so they remain accurate even when probe types use different sampling intervals.</p>
+    </div>
   </div>
+  <div class="settings-actions"><button id="resetMonitoringSettings" class="btn">Reset to defaults</button><button id="saveMonitoringSettings" class="btn primary">Save Settings</button></div>
+  <p class="muted">Target-specific monitoring configuration lives with each target. RemoteHand core remains generic.</p>
 </section>
 </div>
 
