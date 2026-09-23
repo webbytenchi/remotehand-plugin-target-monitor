@@ -109,7 +109,8 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
   <div class="appearance-group">
    <div class="appearance-group-title">Top bar</div>
    <div class="color-setting"><label for="colorTargetName">Target name</label><input id="colorTargetName" type="color"></div>
-   <div class="color-setting"><label for="colorValue">Value</label><input id="colorValue" type="color"></div>
+   <div class="color-setting"><label for="colorValue">Value normal</label><input id="colorValue" type="color"></div>
+   <div class="color-setting"><label for="colorValueAlert">Value alert</label><input id="colorValueAlert" type="color"></div>
   </div>
   <div class="appearance-group">
    <div class="appearance-group-title">Surface</div>
@@ -255,7 +256,7 @@ function renderSettings(){
 function render(){renderTargets();renderRules();renderSettings()}
 function countRuleUses(ruleId){let n=0;for(const t of state.config.targets){for(const c of t.tcpChecks||[])if((c.alertRuleIds||[]).includes(ruleId))n++;for(const h of t.httpChecks||[])for(const ids of Object.values(h.fieldAlerts||{}))if(ids.includes(ruleId))n++}return n}
 async function persist(message="Saved."){try{normalizeStatus(await request("monitor.config.set",state.config));notice(message,"success");return true}catch(e){notice(String(e),"error");await refresh();return false}}
-const DEFAULT_TARGET_COLORS={graphNormalColor:"#70a7e8",graphHighColor:"#f1cf87",graphCriticalColor:"#efaaaa",graphOfflineColor:"#8f9baa",targetNameColor:"#a8b4c2",latencyColor:"#dce4ee",backgroundColor:"#16263a",borderColor:"#3b5f8d"};
+const DEFAULT_TARGET_COLORS={graphNormalColor:"#70a7e8",graphHighColor:"#f1cf87",graphCriticalColor:"#efaaaa",graphOfflineColor:"#8f9baa",targetNameColor:"#a8b4c2",latencyColor:"#dce4ee",valueAlertColor:"#efaaaa",backgroundColor:"#16263a",borderColor:"#3b5f8d"};
 function baseTarget(){return{id:id("target"),name:"",address:"",enabled:true,pingEnabled:true,showInSystemTray:false,showAlertNotifications:true,tcpChecks:[],httpChecks:[],topbar:{enabled:true,titleSource:"target.name",valueSource:"ping.latency",graphSource:"ping.latency"},graphThresholds:{},sourceFormats:{},...DEFAULT_TARGET_COLORS}}
 function loadTargetColors(target){
  $("colorGraphNormal").value=target.graphNormalColor||DEFAULT_TARGET_COLORS.graphNormalColor;
@@ -264,6 +265,7 @@ function loadTargetColors(target){
  $("colorGraphOffline").value=target.graphOfflineColor||DEFAULT_TARGET_COLORS.graphOfflineColor;
  $("colorTargetName").value=target.targetNameColor||DEFAULT_TARGET_COLORS.targetNameColor;
  $("colorValue").value=target.latencyColor||DEFAULT_TARGET_COLORS.latencyColor;
+ $("colorValueAlert").value=target.valueAlertColor||DEFAULT_TARGET_COLORS.valueAlertColor;
  $("colorBackground").value=target.backgroundColor||DEFAULT_TARGET_COLORS.backgroundColor;
  $("colorBorder").value=target.borderColor||DEFAULT_TARGET_COLORS.borderColor;
 }
@@ -274,6 +276,7 @@ function readTargetColors(target){
  target.graphOfflineColor=$("colorGraphOffline").value;
  target.targetNameColor=$("colorTargetName").value;
  target.latencyColor=$("colorValue").value;
+ target.valueAlertColor=$("colorValueAlert").value;
  target.backgroundColor=$("colorBackground").value;
  target.borderColor=$("colorBorder").value;
 }
