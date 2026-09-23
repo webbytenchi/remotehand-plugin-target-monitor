@@ -17,6 +17,7 @@ const DEFAULT_TCP_INTERVAL_SECONDS: u64 = 5;
 const DEFAULT_HTTP_INTERVAL_SECONDS: u64 = 10;
 const DEFAULT_HISTORY_RETENTION_SECONDS: u64 = 60 * 60;
 const DEFAULT_TOPBAR_HISTORY_SECONDS: u64 = 60;
+const DEFAULT_NETWORK_IDENTITY_REFRESH_SECONDS: u64 = 5 * 60;
 const STATE_CONFIRMATION_SAMPLES: u32 = 2;
 const STORAGE_KEY: &str = "config";
 const DEFAULT_TARGET_ID: &str = "target-8-8-8-8";
@@ -49,6 +50,8 @@ fn default_value_alert_color() -> String { DEFAULT_VALUE_ALERT_COLOR.to_string()
 fn default_background_color() -> String { DEFAULT_BACKGROUND_COLOR.to_string() }
 fn default_border_color() -> String { DEFAULT_BORDER_COLOR.to_string() }
 fn default_network_identity_topbar_source() -> String { "public".to_string() }
+fn default_network_identity_auto_refresh() -> bool { true }
+fn default_network_identity_refresh_seconds() -> u64 { DEFAULT_NETWORK_IDENTITY_REFRESH_SECONDS }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -402,6 +405,10 @@ struct StoredConfig {
     show_network_identity_topbar: bool,
     #[serde(default = "default_network_identity_topbar_source")]
     network_identity_topbar_source: String,
+    #[serde(default = "default_network_identity_auto_refresh")]
+    network_identity_auto_refresh: bool,
+    #[serde(default = "default_network_identity_refresh_seconds")]
+    network_identity_refresh_seconds: u64,
 }
 impl Default for StoredConfig {
     fn default() -> Self { default_config() }
@@ -671,6 +678,8 @@ fn default_config() -> StoredConfig {
     StoredConfig {
         targets: vec![default_target()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
+        network_identity_auto_refresh: default_network_identity_auto_refresh(),
+        network_identity_refresh_seconds: default_network_identity_refresh_seconds(),
     }
 }
 
@@ -708,6 +717,9 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     }
     if config.monitoring.topbar_history_seconds < 10 || config.monitoring.topbar_history_seconds > 60 * 60 {
         return Err("top-bar history must be 10 seconds to 1 hour".into());
+    }
+    if !matches!(config.network_identity_refresh_seconds, 60|300|600|1800|3600) {
+        return Err("Network Identity refresh interval must be 1, 5, 10, 30, or 60 minutes".into());
     }
     let mut target_ids = BTreeSet::new();
     let mut rule_ids = BTreeSet::new();
@@ -1451,6 +1463,8 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn network_identity_refresh_defaults_are_backward_compatible(){let c=default_config();assert!(c.network_identity_auto_refresh);assert_eq!(c.network_identity_refresh_seconds,300);}
+    #[test] fn network_identity_refresh_interval_is_bounded_to_supported_values(){let mut c=default_config();c.network_identity_refresh_seconds=42;assert!(validate_config(&c).is_err());c.network_identity_refresh_seconds=600;assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_topbar_can_be_hidden(){let s=MonitorStore::new();let items=topbar_value(&s)["items"].as_array().unwrap().clone();assert!(items.iter().all(|item|item["id"]!="target-monitor:network-identity"));}
     #[test] fn network_identity_topbar_contains_public_ip(){let mut s=MonitorStore::new();s.config.show_network_identity_topbar=true;s.network_identity.public_ip=Some("203.0.113.10".into());let items=topbar_value(&s)["items"].as_array().unwrap().clone();let item=items.iter().find(|item|item["id"]=="target-monitor:network-identity").unwrap();assert_eq!(item["content"]["label"],"203.0.113.10");assert_eq!(item["menu"]["items"][0]["action"]["method"],"monitor.clipboard.write");}
     #[test] fn network_identity_topbar_uses_selected_interface(){let mut s=MonitorStore::new();s.config.show_network_identity_topbar=true;s.config.network_identity_topbar_source="interface:Wi-Fi:ipv4".into();s.network_identity.interfaces=vec![json!({"name":"Wi-Fi","addresses":[{"address":"192.168.1.25","family":"ipv4"}]})];let items=topbar_value(&s)["items"].as_array().unwrap().clone();let item=items.iter().find(|item|item["id"]=="target-monitor:network-identity").unwrap();assert_eq!(item["icon"],"wifi");assert_eq!(item["content"]["label"],"192.168.1.25");}
