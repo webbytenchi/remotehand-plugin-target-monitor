@@ -56,7 +56,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
       <div class="settings-section">
         <h3>History</h3>
         <div class="fields">
-          <div class="field"><label>Metric history retention</label><div class="duration-input"><input id="settingHistoryValue" type="number" min="1" step="1"><select id="settingHistoryUnit"><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></div></div>
+          <div class="field"><label>Metric history retention</label><div class="duration-input"><input id="settingHistoryValue" type="number" min="1" step="1"><select id="settingHistoryUnit"><option value="1">seconds</option><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></div></div>
           <div class="field"><label>Top-bar graph history</label><div class="duration-input"><input id="settingTopbarValue" type="number" min="1" step="1"><select id="settingTopbarUnit"><option value="1">seconds</option><option value="60">minutes</option></select></div></div>
         </div>
         <p class="muted">History windows are time-based, so they remain accurate even when probe types use different sampling intervals.</p>
@@ -193,7 +193,7 @@ function renderSettings(){
   $("settingPingInterval").value=m.pingIntervalSeconds??2;
   $("settingTcpInterval").value=m.tcpIntervalSeconds??5;
   $("settingHttpInterval").value=m.httpIntervalSeconds??10;
-  const hist=splitDuration(m.historyRetentionSeconds??3600,[86400,3600,60]);
+  const hist=splitDuration(m.historyRetentionSeconds??3600,[86400,3600,60,1]);
   $("settingHistoryValue").value=hist[0];$("settingHistoryUnit").value=String(hist[1]);
   const top=splitDuration(m.topbarHistorySeconds??60,[60,1]);
   $("settingTopbarValue").value=top[0];$("settingTopbarUnit").value=String(top[1]);
@@ -274,7 +274,8 @@ $("saveMonitoringSettings").onclick=async()=>{
   if(!Number.isFinite(topbar)||topbar<10||topbar>3600)return notice("Top-bar history must be between 10 seconds and 1 hour.","error");
   state.config.monitoring={pingIntervalSeconds:ping,tcpIntervalSeconds:tcp,httpIntervalSeconds:http,historyRetentionSeconds:history,topbarHistorySeconds:topbar};
   const ok=await persist("Monitoring settings saved.");
-  if(ok){settingsDirty=false;renderSettings()}
+  settingsDirty=false;
+  renderSettings();
 };
 $("saveLegacy").onclick=async()=>{const a=legacyAlertsDraft();for(const [k,label] of [["highLatency","High latency"],["offline","Offline"],["recovery","Recovery"]]){const n=Number(a[k].cooldownSeconds);if(!Number.isFinite(n)||n<5||n>86400)return notice(label+" cooldown must be between 5 and 86400 seconds.","error")}const reminder=Number(a.reminderIntervalSeconds);if(!Number.isFinite(reminder)||reminder<5||reminder>86400)return notice("Reminder interval must be between 5 and 86400 seconds.","error");state.config.alerts=structuredClone(a);const ok=await persist("Alert settings saved.");if(ok){legacyDraftDirty=false;legacyDraft=structuredClone(state.config.alerts);renderLegacy()}}
 function sparkHtml(history,target){const h=(history||[]).slice(-30);if(!h.length)return"<div class='muted'>No Ping history yet.</div>";const values=h.map(x=>Number(x.latencyMs)).filter(Number.isFinite),max=Math.max(1,...values);const normal=target?.graphNormalColor||"var(--accent)",high=target?.graphHighColor||"var(--warn)",offline=target?.graphOfflineColor||"var(--bad)";return `<div class="spark">${h.map(x=>{const v=Number(x.latencyMs),state=x.state||"NORMAL",color=state==="OFFLINE"?offline:state==="HIGH LATENCY"?high:normal,height=Number.isFinite(v)?Math.max(4,Math.round((v/max)*54)):5;return `<i title="${esc(Number.isFinite(v)?v+" ms · "+state:state)}" style="height:${height}px;background:${color}"></i>`}).join("")}</div>`}
