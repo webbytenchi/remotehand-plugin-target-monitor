@@ -407,6 +407,13 @@ impl Default for StoredConfig {
     fn default() -> Self { default_config() }
 }
 
+#[derive(Debug, Clone, Default)]
+struct NetworkIdentity {
+    public_ip: Option<String>,
+    public_ip_error: Option<String>,
+    interfaces: Vec<Value>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SampleRecord {
@@ -577,12 +584,13 @@ impl TargetMonitor {
 struct MonitorStore {
     targets: BTreeMap<String, TargetMonitor>,
     config: StoredConfig,
+    network_identity: NetworkIdentity,
 }
 impl MonitorStore {
     fn new() -> Self {
         let config = default_config();
         let targets = config.targets.iter().cloned().map(|t| (t.id.clone(), TargetMonitor::new(t))).collect();
-        Self { targets, config }
+        Self { targets, config, network_identity: NetworkIdentity::default() }
     }
     fn replace_config(&mut self, config: StoredConfig) {
         let old = std::mem::take(&mut self.targets);
