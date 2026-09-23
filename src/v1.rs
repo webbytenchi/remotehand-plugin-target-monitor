@@ -27,7 +27,8 @@ const MAX_TOTAL_SOUND_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_SOUND_DURATION_MS: u64 = 10_000;
 const DEFAULT_GRAPH_NORMAL_COLOR: &str = "#70a7e8";
 const DEFAULT_GRAPH_HIGH_COLOR: &str = "#f1cf87";
-const DEFAULT_GRAPH_OFFLINE_COLOR: &str = "#efaaaa";
+const DEFAULT_GRAPH_CRITICAL_COLOR: &str = "#efaaaa";
+const DEFAULT_GRAPH_OFFLINE_COLOR: &str = "#8f9baa";
 const DEFAULT_TARGET_NAME_COLOR: &str = "#a8b4c2";
 const DEFAULT_LATENCY_COLOR: &str = "#dce4ee";
 const DEFAULT_BACKGROUND_COLOR: &str = "#16263a";
@@ -39,6 +40,7 @@ fn now_ms() -> u64 {
 fn default_true() -> bool { true }
 fn default_graph_normal_color() -> String { DEFAULT_GRAPH_NORMAL_COLOR.to_string() }
 fn default_graph_high_color() -> String { DEFAULT_GRAPH_HIGH_COLOR.to_string() }
+fn default_graph_critical_color() -> String { DEFAULT_GRAPH_CRITICAL_COLOR.to_string() }
 fn default_graph_offline_color() -> String { DEFAULT_GRAPH_OFFLINE_COLOR.to_string() }
 fn default_target_name_color() -> String { DEFAULT_TARGET_NAME_COLOR.to_string() }
 fn default_latency_color() -> String { DEFAULT_LATENCY_COLOR.to_string() }
@@ -244,6 +246,21 @@ impl Default for TopbarConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GraphThreshold {
+    operator: String,
+    value: f64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphThresholdConfig {
+    #[serde(default)]
+    warning: Option<GraphThreshold>,
+    #[serde(default)]
+    critical: Option<GraphThreshold>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MonitorTarget {
     id: String,
     name: String,
@@ -266,6 +283,8 @@ struct MonitorTarget {
     graph_normal_color: String,
     #[serde(default = "default_graph_high_color")]
     graph_high_color: String,
+    #[serde(default = "default_graph_critical_color")]
+    graph_critical_color: String,
     #[serde(default = "default_graph_offline_color")]
     graph_offline_color: String,
     #[serde(default = "default_target_name_color")]
@@ -276,6 +295,8 @@ struct MonitorTarget {
     background_color: String,
     #[serde(default = "default_border_color")]
     border_color: String,
+    #[serde(default)]
+    graph_thresholds: BTreeMap<String, GraphThresholdConfig>,
 }
 impl MonitorTarget {
     fn graph_color_for_state(&self, state: &str) -> &str {
@@ -284,6 +305,18 @@ impl MonitorTarget {
             "HIGH LATENCY" | "DEGRADED" => &self.graph_high_color,
             _ => self.graph_color.as_deref().unwrap_or(&self.graph_normal_color),
         }
+    }
+    fn graph_color_for_value(&self, source: &str, value: f64) -> &str {
+        let Some(config) = self.graph_thresholds.get(source) else {
+            return self.graph_color.as_deref().unwrap_or(&self.graph_normal_color);
+        };
+        if config.critical.as_ref().map(|t| threshold_matches(value, t)).unwrap_or(false) {
+            return &self.graph_critical_color;
+        }
+        if config.warning.as_ref().map(|t| threshold_matches(value, t)).unwrap_or(false) {
+            return &self.graph_high_color;
+        }
+        self.graph_color.as_deref().unwrap_or(&self.graph_normal_color)
     }
 }
 
@@ -599,6 +632,16 @@ fn default_config() -> StoredConfig {
     }
 }
 
+fn threshold_matches(value: f64, threshold: &GraphThreshold) -> bool {
+    match threshold.operator.as_str() {
+        ">=" => value >= threshold.value,
+        "<=" => value <= threshold.value,
+        ">" => value > threshold.value,
+        "<" => value < threshold.value,
+        "=" => (value - threshold.value).abs() < f64::EPSILON,
+        _ => false,
+    }
+}
 fn valid_hex_color(value: &str) -> bool {
     value.len() == 7 && value.starts_with('#') && value.as_bytes()[1..].iter().all(|b| b.is_ascii_hexdigit())
 }
@@ -643,8 +686,15 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
         if target.id.trim().is_empty() || !target_ids.insert(target.id.clone()) { return Err("target ids must be unique and non-empty".into()); }
         if target.name.trim().is_empty() || target.name.len() > 128 { return Err("target name is missing or too long".into()); }
         resolve_target(&target.address)?;
-        for color in [&target.graph_normal_color,&target.graph_high_color,&target.graph_offline_color,&target.target_name_color,&target.latency_color,&target.background_color,&target.border_color] {
+        for color in [&target.graph_normal_color,&target.graph_high_color,&target.graph_critical_color,&target.graph_offline_color,&target.target_name_color,&target.latency_color,&target.background_color,&target.border_color] {
             if !valid_hex_color(color) { return Err("target colors must use #RRGGBB".into()); }
+        }
+        for (source, thresholds) in &target.graph_thresholds {
+            if source.trim().is_empty() { return Err("graph threshold source cannot be empty".into()); }
+            for threshold in [&thresholds.warning, &thresholds.critical].into_iter().flatten() {
+                if !matches!(threshold.operator.as_str(), ">="|"<="|">"|"<"|"=") { return Err(format!("unsupported graph threshold operator: {}", threshold.operator)); }
+                if !threshold.value.is_finite() { return Err("graph threshold values must be finite numbers".into()); }
+            }
         }
         if target.tcp_checks.len() > 32 || target.http_checks.len() > 32 { return Err("maximum 32 TCP and 32 HTTP checks per target".into()); }
         let mut check_ids = BTreeSet::new();
@@ -894,9 +944,13 @@ fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value
             "color":m.target.graph_color_for_state(&p.state)
         })).collect();
     }
-    m.metric_history.get(source)
-        .map(|graph|graph.iter().filter(|p|p.timestamp>=cutoff).map(|p|json!({"value":p.value,"tone":"accent","color":m.target.graph_normal_color})).collect())
-        .unwrap_or_default()
+    let mut series=m.metric_history.get(source)
+        .map(|graph|graph.iter().filter(|p|p.timestamp>=cutoff).map(|p|json!({"value":p.value,"tone":"accent","color":m.target.graph_color_for_value(source,p.value)})).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if source!="none" && source_value(m,source).is_null() {
+        series.push(json!({"value":Value::Null,"tone":"danger","color":m.target.graph_offline_color}));
+    }
+    series
 }
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
@@ -1083,6 +1137,31 @@ mod tests {
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
+    #[test] fn generic_graph_thresholds_color_numeric_series(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.graph_thresholds.insert("metric.temp".into(),GraphThresholdConfig{
+            warning:Some(GraphThreshold{operator:">=".into(),value:55.0}),
+            critical:Some(GraphThreshold{operator:">=".into(),value:70.0}),
+        });
+        m.record_metric("metric.temp",50.0,now_ms()-2000,3600);
+        m.record_metric("metric.temp",60.0,now_ms()-1000,3600);
+        m.record_metric("metric.temp",75.0,now_ms(),3600);
+        let series=graph_series_for(m,"metric.temp",60);
+        assert_eq!(series[0]["color"],json!(m.target.graph_normal_color));
+        assert_eq!(series[1]["color"],json!(m.target.graph_high_color));
+        assert_eq!(series[2]["color"],json!(m.target.graph_critical_color));
+    }
+    #[test] fn generic_graph_thresholds_support_low_is_bad(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.graph_thresholds.insert("metric.hash".into(),GraphThresholdConfig{
+            warning:Some(GraphThreshold{operator:"<=".into(),value:500.0}),
+            critical:Some(GraphThreshold{operator:"<=".into(),value:300.0}),
+        });
+        assert_eq!(m.target.graph_color_for_value("metric.hash",450.0),m.target.graph_high_color);
+        assert_eq!(m.target.graph_color_for_value("metric.hash",250.0),m.target.graph_critical_color);
+    }
     #[test] fn target_appearance_flows_to_topbar_and_tray(){
         let mut s=MonitorStore::new();
         {
