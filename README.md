@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.0** is the current Target Monitor release.
+**Target Monitor v0.7.1** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -225,7 +225,7 @@ If the condition triggers again after resolving, it becomes a new alert event.
 
 ## Native notifications
 
-Target Monitor v0.7.0 can request native Windows notifications through RemoteHand's generic plugin notification capability.
+Target Monitor v0.7.1 can request native Windows notifications through RemoteHand's generic plugin notification capability.
 
 Per target, the user may independently choose:
 
@@ -370,7 +370,7 @@ Panel ID:
 
 Current release version:
 
-    0.7.0
+    0.7.1
 
 ## Lineage
 
@@ -378,11 +378,11 @@ Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase
 
 Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor continues that product line as **v0.7.0**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+Target Monitor continues that product line as **v0.7.1**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
 
 ## Future alert delivery
 
-Target Monitor v0.7.0 currently supports alert sound/reminders and native Windows notifications.
+Target Monitor v0.7.1 currently supports alert sound/reminders and native Windows notifications.
 
 Future versions may add additional alert-delivery sinks such as:
 
@@ -399,7 +399,7 @@ Target Monitor should remain compact, generic, and user-controlled.
 
 The goal is not to become a full enterprise monitoring platform.
 
-The v0.7.0 release focuses on:
+The v0.7.1 release focuses on:
 
 - proven Ping monitoring
 - TCP reachability
