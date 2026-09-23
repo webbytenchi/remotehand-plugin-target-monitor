@@ -12,9 +12,12 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
-const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
-const HISTORY_LIMIT: usize = 1800;
-const TOPBAR_HISTORY_LIMIT: usize = 30;
+const LEGACY_SAMPLE_INTERVAL_SECONDS: u64 = 2;
+const DEFAULT_PING_INTERVAL_SECONDS: u64 = 2;
+const DEFAULT_TCP_INTERVAL_SECONDS: u64 = 5;
+const DEFAULT_HTTP_INTERVAL_SECONDS: u64 = 10;
+const DEFAULT_HISTORY_RETENTION_SECONDS: u64 = 60 * 60;
+const DEFAULT_TOPBAR_HISTORY_SECONDS: u64 = 60;
 const STATE_CONFIRMATION_SAMPLES: u32 = 2;
 const STORAGE_KEY: &str = "config";
 const DEFAULT_TARGET_ID: &str = "target-8-8-8-8";
@@ -287,9 +290,53 @@ impl MonitorTarget {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MonitoringSettings {
+    #[serde(default = "default_ping_interval_seconds")]
+    ping_interval_seconds: u64,
+    #[serde(default = "default_tcp_interval_seconds")]
+    tcp_interval_seconds: u64,
+    #[serde(default = "default_http_interval_seconds")]
+    http_interval_seconds: u64,
+    #[serde(default = "default_history_retention_seconds")]
+    history_retention_seconds: u64,
+    #[serde(default = "default_topbar_history_seconds")]
+    topbar_history_seconds: u64,
+}
+fn default_ping_interval_seconds() -> u64 { DEFAULT_PING_INTERVAL_SECONDS }
+fn default_tcp_interval_seconds() -> u64 { DEFAULT_TCP_INTERVAL_SECONDS }
+fn default_http_interval_seconds() -> u64 { DEFAULT_HTTP_INTERVAL_SECONDS }
+fn default_history_retention_seconds() -> u64 { DEFAULT_HISTORY_RETENTION_SECONDS }
+fn default_topbar_history_seconds() -> u64 { DEFAULT_TOPBAR_HISTORY_SECONDS }
+impl MonitoringSettings {
+    fn new_defaults() -> Self {
+        Self {
+            ping_interval_seconds: DEFAULT_PING_INTERVAL_SECONDS,
+            tcp_interval_seconds: DEFAULT_TCP_INTERVAL_SECONDS,
+            http_interval_seconds: DEFAULT_HTTP_INTERVAL_SECONDS,
+            history_retention_seconds: DEFAULT_HISTORY_RETENTION_SECONDS,
+            topbar_history_seconds: DEFAULT_TOPBAR_HISTORY_SECONDS,
+        }
+    }
+}
+impl Default for MonitoringSettings {
+    fn default() -> Self {
+        Self {
+            ping_interval_seconds: LEGACY_SAMPLE_INTERVAL_SECONDS,
+            tcp_interval_seconds: LEGACY_SAMPLE_INTERVAL_SECONDS,
+            http_interval_seconds: LEGACY_SAMPLE_INTERVAL_SECONDS,
+            history_retention_seconds: DEFAULT_HISTORY_RETENTION_SECONDS,
+            topbar_history_seconds: DEFAULT_TOPBAR_HISTORY_SECONDS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StoredConfig {
     #[serde(default)]
     targets: Vec<MonitorTarget>,
+    #[serde(default)]
+    monitoring: MonitoringSettings,
     #[serde(default)]
     alerts: LegacyAlertConfig,
     #[serde(default)]
@@ -391,7 +438,7 @@ impl TargetMonitor {
             last_legacy_alert_at: BTreeMap::new(),
         }
     }
-    fn record_ping(&mut self, sample: &Value) -> Option<(String, String)> {
+    fn record_ping(&mut self, sample: &Value, retention_seconds: u64) -> Option<(String, String)> {
         let state = sample.get("state").and_then(Value::as_str).unwrap_or("OFFLINE").to_string();
         let previous_state = self.last_state.clone();
         if state == self.last_state {
@@ -420,14 +467,16 @@ impl TargetMonitor {
             packet_loss_percent: sample.get("packetLossPercent").and_then(Value::as_f64).unwrap_or(100.0),
             state,
         });
-        trim_history(&mut self.samples, HISTORY_LIMIT);
-        if let Some(v) = latency { self.record_metric("ping.latency", v, timestamp); }
+        let cutoff = timestamp.saturating_sub(retention_seconds.saturating_mul(1000));
+        self.samples.retain(|p| p.timestamp >= cutoff);
+        if let Some(v) = latency { self.record_metric("ping.latency", v, timestamp, retention_seconds); }
         if previous_state != self.last_state { Some((previous_state, self.last_state.clone())) } else { None }
     }
-    fn record_metric(&mut self, source: &str, value: f64, timestamp: u64) {
+    fn record_metric(&mut self, source: &str, value: f64, timestamp: u64, retention_seconds: u64) {
         let history = self.metric_history.entry(source.to_string()).or_default();
         history.push(MetricRecord { timestamp, value });
-        trim_history(history, HISTORY_LIMIT);
+        let cutoff = timestamp.saturating_sub(retention_seconds.saturating_mul(1000));
+        history.retain(|p| p.timestamp >= cutoff);
     }
     fn unread_alerts(&self) -> usize { self.active_alerts.values().filter(|a| !a.acknowledged).count() }
     fn overall_state(&self) -> &'static str {
@@ -467,10 +516,6 @@ impl TargetMonitor {
         })
     }
 }
-fn trim_history<T>(items: &mut Vec<T>, limit: usize) {
-    if items.len() > limit { items.drain(..items.len()-limit); }
-}
-
 #[derive(Debug)]
 struct MonitorStore {
     targets: BTreeMap<String, TargetMonitor>,
@@ -534,7 +579,7 @@ fn default_target() -> MonitorTarget {
 }
 fn default_config() -> StoredConfig {
     StoredConfig {
-        targets: vec![default_target()], alerts: LegacyAlertConfig::default(), alert_rules: vec![],
+        targets: vec![default_target()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
     }
 }
@@ -551,6 +596,19 @@ fn validate_sound(sound: &SoundConfig) -> Result<(), String> {
 }
 fn validate_config(config: &StoredConfig) -> Result<(), String> {
     if config.targets.is_empty() || config.targets.len() > 64 { return Err("Target Monitor requires 1-64 targets".into()); }
+    for (name, seconds) in [
+        ("Ping", config.monitoring.ping_interval_seconds),
+        ("TCP", config.monitoring.tcp_interval_seconds),
+        ("HTTP", config.monitoring.http_interval_seconds),
+    ] {
+        if seconds < 1 || seconds > 3600 { return Err(format!("{name} sampling interval must be 1-3600 seconds")); }
+    }
+    if config.monitoring.history_retention_seconds < 60 || config.monitoring.history_retention_seconds > 7 * 24 * 60 * 60 {
+        return Err("history retention must be 1 minute to 7 days".into());
+    }
+    if config.monitoring.topbar_history_seconds < 10 || config.monitoring.topbar_history_seconds > 60 * 60 {
+        return Err("top-bar history must be 10 seconds to 1 hour".into());
+    }
     let mut target_ids = BTreeSet::new();
     let mut rule_ids = BTreeSet::new();
     let mut sound_total = 0u64;
@@ -762,23 +820,23 @@ fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&L
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"reminder":reminder,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
 }
 
-fn sample_target(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],legacy:&LegacyAlertConfig){
+fn sample_target(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],legacy:&LegacyAlertConfig,retention_seconds:u64){
     let target=monitor.target.clone();
     let ping=sample_ping(&target);
-    let transition=monitor.record_ping(&ping);
+    let transition=monitor.record_ping(&ping,retention_seconds);
     legacy_alert(output,monitor,legacy,transition);
     for check in target.tcp_checks.iter().filter(|c|c.enabled) {
         let result=sample_tcp(&target,check);
-        if let Some(ms)=result.latency_ms { monitor.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp); }
+        if let Some(ms)=result.latency_ms { monitor.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp,retention_seconds); }
         evaluate_rules(output,monitor,rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
         monitor.tcp_results.insert(check.id.clone(),result);
     }
     for check in target.http_checks.iter().filter(|c|c.enabled) {
         let result=sample_http(check);
-        if let Some(ms)=result.response_time_ms { monitor.record_metric(&format!("http:{}.responseTime",check.id),ms,result.timestamp); }
+        if let Some(ms)=result.response_time_ms { monitor.record_metric(&format!("http:{}.responseTime",check.id),ms,result.timestamp,retention_seconds); }
         for (field,value) in &result.fields {
             let source=format!("http:{}.{}",check.id,field);
-            if let Some(v)=numeric(value){monitor.record_metric(&source,v,result.timestamp);}
+            if let Some(v)=numeric(value){monitor.record_metric(&source,v,result.timestamp,retention_seconds);}
             if let Some(ids)=check.field_alerts.get(field){evaluate_rules(output,monitor,rules,&source,value.clone(),ids);}
         }
         if check.detect_changes { evaluate_rules(output,monitor,rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[])); }
@@ -812,24 +870,24 @@ fn display_value(v:&Value)->String{
     match v {Value::Null=>"—".into(),Value::Bool(b)=>if *b{"Yes".into()}else{"No".into()},Value::Number(n)=>n.as_f64().map(|f|if f.abs()>=100.0{format!("{f:.0}")}else{format!("{f:.1}")}).unwrap_or_else(||n.to_string()),Value::String(s)=>s.chars().take(22).collect(),_=>v.to_string()}
 }
 fn topbar_tone(state:&str)->&'static str{match state{"OFFLINE"=>"danger","DEGRADED"=>"warning","ONLINE"=>"accent",_=>"muted"}}
-fn graph_series_for(m:&TargetMonitor,source:&str)->Vec<Value>{
+fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value>{
+    let cutoff=now_ms().saturating_sub(history_seconds.saturating_mul(1000));
     if source=="ping.latency" {
-        let start=m.samples.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
-        return m.samples[start..].iter().map(|p|json!({
+        return m.samples.iter().filter(|p|p.timestamp>=cutoff).map(|p|json!({
             "value":p.latency_ms,
             "tone":match p.state.as_str(){"OFFLINE"=>"danger","HIGH LATENCY"=>"warning",_=>"accent"},
             "color":m.target.graph_color_for_state(&p.state)
         })).collect();
     }
-    let graph=m.metric_history.get(source).cloned().unwrap_or_default();
-    let start=graph.len().saturating_sub(TOPBAR_HISTORY_LIMIT);
-    graph[start..].iter().map(|p|json!({"value":p.value,"tone":"accent","color":m.target.graph_normal_color})).collect()
+    m.metric_history.get(source)
+        .map(|graph|graph.iter().filter(|p|p.timestamp>=cutoff).map(|p|json!({"value":p.value,"tone":"accent","color":m.target.graph_normal_color})).collect())
+        .unwrap_or_default()
 }
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
         let title=display_value(&source_value(m,&m.target.topbar.title_source));
         let value=display_value(&source_value(m,&m.target.topbar.value_source));
-        let series=graph_series_for(m,&m.target.topbar.graph_source);
+        let series=graph_series_for(m,&m.target.topbar.graph_source,store.config.monitoring.topbar_history_seconds);
         let mut children=vec![];
         if m.target.topbar.title_source!="none"{children.push(json!({"type":"text","label":title,"tone":"muted","color":m.target.target_name_color,"fontSize":9}));}
         if m.target.topbar.value_source!="none"{children.push(json!({"type":"metric","value":value,"tone":topbar_tone(m.overall_state()),"color":m.target.latency_color,"fontSize":14}));}
@@ -843,7 +901,7 @@ fn topbar_value(store:&MonitorStore)->Value{
 fn tray_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.show_in_system_tray).map(|m|{
         let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
-        let series=graph_series_for(m,source);
+        let series=graph_series_for(m,source,store.config.monitoring.topbar_history_seconds);
         json!({"id":m.target.id,"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
     json!({"items":items})
@@ -873,31 +931,86 @@ fn main()->Result<(),String>{
         emit_surfaces(&output_tx,&guard)?;
     }
     {
-        let sampler_store=Arc::clone(&store); let sampler_output=output_tx.clone();
+        let ping_store=Arc::clone(&store); let ping_output=output_tx.clone();
         thread::spawn(move||loop{
-            thread::sleep(SAMPLE_INTERVAL);
-            let target_ids=match sampler_store.lock(){Ok(s)=>s.targets.values().filter(|m|m.target.enabled).map(|m|m.target.id.clone()).collect::<Vec<_>>(),Err(_)=>return};
+            let interval=match ping_store.lock(){Ok(s)=>s.config.monitoring.ping_interval_seconds,Err(_)=>return};
+            thread::sleep(Duration::from_secs(interval));
+            let target_ids=match ping_store.lock(){Ok(s)=>s.targets.values().filter(|m|m.target.enabled).map(|m|m.target.id.clone()).collect::<Vec<_>>(),Err(_)=>return};
             for id in target_ids {
-                let snapshot={
-                    let guard=match sampler_store.lock(){Ok(g)=>g,Err(_)=>return};
-                    let Some(monitor)=guard.targets.get(&id) else {continue};
-                    (monitor.clone(),guard.config.alert_rules.clone(),guard.config.alerts.clone())
+                let snapshot=match ping_store.lock(){Ok(s)=>s.targets.get(&id).map(|m|(m.target.clone(),s.config.alerts.clone(),s.config.monitoring.history_retention_seconds)),Err(_)=>return};
+                let Some((target,legacy,retention))=snapshot else{continue};
+                let ping=sample_ping(&target);
+                let payload={
+                    let mut guard=match ping_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let Some(current)=guard.targets.get_mut(&id) else{continue};
+                    if current.target!=target{continue}
+                    let transition=current.record_ping(&ping,retention);
+                    legacy_alert(&ping_output,current,&legacy,transition);
+                    Some(current.summary())
                 };
-                let (mut sampled,rules,legacy)=snapshot;
-                sample_target(&sampler_output,&mut sampled,&rules,&legacy);
-                let mut guard=match sampler_store.lock(){Ok(g)=>g,Err(_)=>return};
-                let mut summary=None;
-                if let Some(current)=guard.targets.get_mut(&id){
-                    if current.target==sampled.target{
-                        *current=sampled;
-                        summary=Some(current.summary());
-                    }
-                }
-                if let Some(payload)=summary{
-                    let _=send_outbound(&sampler_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});
-                }
-                if emit_surfaces(&sampler_output,&guard).is_err(){return;}
+                if let Some(payload)=payload{let _=send_outbound(&ping_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});}
             }
+            let guard=match ping_store.lock(){Ok(g)=>g,Err(_)=>return};
+            if emit_surfaces(&ping_output,&guard).is_err(){return;}
+        });
+    }
+    {
+        let tcp_store=Arc::clone(&store); let tcp_output=output_tx.clone();
+        thread::spawn(move||loop{
+            let interval=match tcp_store.lock(){Ok(s)=>s.config.monitoring.tcp_interval_seconds,Err(_)=>return};
+            thread::sleep(Duration::from_secs(interval));
+            let target_ids=match tcp_store.lock(){Ok(s)=>s.targets.values().filter(|m|m.target.enabled).map(|m|m.target.id.clone()).collect::<Vec<_>>(),Err(_)=>return};
+            for id in target_ids {
+                let snapshot=match tcp_store.lock(){Ok(s)=>s.targets.get(&id).map(|m|(m.target.clone(),s.config.alert_rules.clone(),s.config.monitoring.history_retention_seconds)),Err(_)=>return};
+                let Some((target,rules,retention))=snapshot else{continue};
+                let results=target.tcp_checks.iter().filter(|x|x.enabled).map(|check|(check.clone(),sample_tcp(&target,check))).collect::<Vec<_>>();
+                let payload={
+                    let mut guard=match tcp_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let Some(current)=guard.targets.get_mut(&id) else{continue};
+                    if current.target!=target{continue}
+                    for (check,result) in results {
+                        if let Some(ms)=result.latency_ms{current.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp,retention);}
+                        evaluate_rules(&tcp_output,current,&rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
+                        current.tcp_results.insert(check.id.clone(),result);
+                    }
+                    Some(current.summary())
+                };
+                if let Some(payload)=payload{let _=send_outbound(&tcp_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});}
+            }
+            let guard=match tcp_store.lock(){Ok(g)=>g,Err(_)=>return};
+            if emit_surfaces(&tcp_output,&guard).is_err(){return;}
+        });
+    }
+    {
+        let http_store=Arc::clone(&store); let http_output=output_tx.clone();
+        thread::spawn(move||loop{
+            let interval=match http_store.lock(){Ok(s)=>s.config.monitoring.http_interval_seconds,Err(_)=>return};
+            thread::sleep(Duration::from_secs(interval));
+            let target_ids=match http_store.lock(){Ok(s)=>s.targets.values().filter(|m|m.target.enabled).map(|m|m.target.id.clone()).collect::<Vec<_>>(),Err(_)=>return};
+            for id in target_ids {
+                let snapshot=match http_store.lock(){Ok(s)=>s.targets.get(&id).map(|m|(m.target.clone(),s.config.alert_rules.clone(),s.config.monitoring.history_retention_seconds)),Err(_)=>return};
+                let Some((target,rules,retention))=snapshot else{continue};
+                let results=target.http_checks.iter().filter(|x|x.enabled).map(|check|(check.clone(),sample_http(check))).collect::<Vec<_>>();
+                let payload={
+                    let mut guard=match http_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let Some(current)=guard.targets.get_mut(&id) else{continue};
+                    if current.target!=target{continue}
+                    for (check,result) in results {
+                        if let Some(ms)=result.response_time_ms{current.record_metric(&format!("http:{}.responseTime",check.id),ms,result.timestamp,retention);}
+                        for (field,value) in &result.fields {
+                            let source=format!("http:{}.{}",check.id,field);
+                            if let Some(v)=numeric(value){current.record_metric(&source,v,result.timestamp,retention);}
+                            if let Some(ids)=check.field_alerts.get(field){evaluate_rules(&http_output,current,&rules,&source,value.clone(),ids);}
+                        }
+                        if check.detect_changes{evaluate_rules(&http_output,current,&rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[]));}
+                        current.http_results.insert(check.id.clone(),result);
+                    }
+                    Some(current.summary())
+                };
+                if let Some(payload)=payload{let _=send_outbound(&http_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});}
+            }
+            let guard=match http_store.lock(){Ok(g)=>g,Err(_)=>return};
+            if emit_surfaces(&http_output,&guard).is_err(){return;}
         });
     }
     loop {
@@ -942,6 +1055,8 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
+    #[test] fn legacy_config_monitoring_defaults_preserve_two_second_cadence(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,2);assert_eq!(c.monitoring.http_interval_seconds,2);}
     #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
@@ -951,7 +1066,7 @@ mod tests {
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
-    #[test] fn ping_tracks_last_reachable_and_offline_since(){let mut m=TargetMonitor::new(default_target());m.last_state="NORMAL".into();m.pending_state="NORMAL".into();m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}));let reachable=m.last_reachable_at;assert!(reachable.is_some());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}));assert!(m.offline_since.is_none());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}));assert_eq!(m.last_state,"OFFLINE");assert!(m.offline_since.is_some());assert_eq!(m.last_reachable_at,reachable);m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}));m.record_ping(&json!({"state":"NORMAL","latencyMs":11.0,"packetLossPercent":0.0}));assert_eq!(m.last_state,"NORMAL");assert!(m.offline_since.is_none());assert!(m.last_reachable_at.unwrap()>=reachable.unwrap());}
+    #[test] fn ping_tracks_last_reachable_and_offline_since(){let mut m=TargetMonitor::new(default_target());m.last_state="NORMAL".into();m.pending_state="NORMAL".into();m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}),3600);let reachable=m.last_reachable_at;assert!(reachable.is_some());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert!(m.offline_since.is_none());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert_eq!(m.last_state,"OFFLINE");assert!(m.offline_since.is_some());assert_eq!(m.last_reachable_at,reachable);m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}),3600);m.record_ping(&json!({"state":"NORMAL","latencyMs":11.0,"packetLossPercent":0.0}),3600);assert_eq!(m.last_state,"NORMAL");assert!(m.offline_since.is_none());assert!(m.last_reachable_at.unwrap()>=reachable.unwrap());}
     #[test] fn replace_config_prunes_removed_tcp_results(){let mut s=MonitorStore::new();let mut c=s.config.clone();c.targets[0].tcp_checks=vec![TcpCheck{id:"keep".into(),name:"Keep".into(),port:80,enabled:true,alert_rule_ids:vec![]},TcpCheck{id:"drop".into(),name:"Drop".into(),port:22,enabled:true,alert_rule_ids:vec![]}];s.replace_config(c.clone());let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.tcp_results.insert("keep".into(),TcpResult{id:"keep".into(),name:"Keep".into(),port:80,reachable:true,latency_ms:Some(1.0),error:None,timestamp:1});m.tcp_results.insert("drop".into(),TcpResult{id:"drop".into(),name:"Drop".into(),port:22,reachable:false,latency_ms:None,error:None,timestamp:1});c.targets[0].tcp_checks.retain(|x|x.id=="keep");s.replace_config(c);let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();assert_eq!(m.tcp_results.len(),1);assert!(m.tcp_results.contains_key("keep"));assert!(!m.tcp_results.contains_key("drop"));}
-    #[test] fn ping_graph_series_keeps_offline_samples_and_sample_colors(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.samples=vec![SampleRecord{timestamp:1,latency_ms:Some(12.0),packet_loss_percent:0.0,state:"NORMAL".into()},SampleRecord{timestamp:2,latency_ms:Some(250.0),packet_loss_percent:0.0,state:"HIGH LATENCY".into()},SampleRecord{timestamp:3,latency_ms:None,packet_loss_percent:100.0,state:"OFFLINE".into()}];let series=graph_series_for(m,"ping.latency");assert_eq!(series.len(),3);assert_eq!(series[0]["color"],json!(m.target.graph_normal_color));assert_eq!(series[1]["color"],json!(m.target.graph_high_color));assert_eq!(series[2]["color"],json!(m.target.graph_offline_color));assert!(series[2]["value"].is_null());}
+    #[test] fn ping_graph_series_keeps_offline_samples_and_sample_colors(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.samples=vec![SampleRecord{timestamp:1,latency_ms:Some(12.0),packet_loss_percent:0.0,state:"NORMAL".into()},SampleRecord{timestamp:2,latency_ms:Some(250.0),packet_loss_percent:0.0,state:"HIGH LATENCY".into()},SampleRecord{timestamp:3,latency_ms:None,packet_loss_percent:100.0,state:"OFFLINE".into()}];let series=graph_series_for(m,"ping.latency",60);assert_eq!(series.len(),3);assert_eq!(series[0]["color"],json!(m.target.graph_normal_color));assert_eq!(series[1]["color"],json!(m.target.graph_high_color));assert_eq!(series[2]["color"],json!(m.target.graph_offline_color));assert!(series[2]["value"].is_null());}
 }
