@@ -1068,6 +1068,21 @@ fn emit_legacy_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,k
     };
     emit_native_notification(output,monitor,format!("{} · {}",monitor.target.name,label),body,tone);
 }
+fn emit_legacy_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,kind:&str){
+    let (label,tone)=match kind{
+        "highLatency"=>("High latency","warning"),
+        "offline"=>("Offline","danger"),
+        "recovery"=>("Recovered","success"),
+        _=>return
+    };
+    emit_native_notification(
+        output,
+        monitor,
+        format!("{} · {} · Test",monitor.target.name,label),
+        "Target Monitor test notification".to_string(),
+        tone,
+    );
+}
 fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->String{
     let mut parts=vec![format!("{} · {}",monitor.target.name,monitor.overall_state())];
     if value_source!="none"{
@@ -1267,6 +1282,19 @@ fn main()->Result<(),String>{
                 let _=emit_surfaces(&output_tx,&guard);
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"acknowledged":true}),error:String::new()}
             }
+            "monitor.alert.test"=>{
+                let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
+                let kind=request.params.get("kind").and_then(Value::as_str).unwrap_or("");
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                match guard.targets.get(target_id){
+                    Some(monitor) if monitor.target.show_alert_notifications=>{
+                        emit_legacy_test_notification(&output_tx,monitor,kind);
+                        PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":true}),error:String::new()}
+                    }
+                    Some(_)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":false}),error:String::new()},
+                    None=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"target not found".into()}
+                }
+            }
             "monitor.shutdown"=>{let response=PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"stopped":true}),error:String::new()};send_outbound(&output_tx,response)?;break}
             _=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:format!("unsupported Target Monitor method: {}",request.method)}
         };
@@ -1350,6 +1378,14 @@ mod tests {
         let tray=tray_value(&s);
         assert_eq!(tray["items"].as_array().unwrap().len(),1);
         assert_eq!(tray["items"][0]["visible"],json!(false));
+    }
+    #[test] fn legacy_test_notification_uses_target_notification_gate(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.show_alert_notifications=false;
+        assert!(!m.target.show_alert_notifications);
+        m.target.show_alert_notifications=true;
+        assert!(m.target.show_alert_notifications);
     }
     #[test] fn notification_payload_targets_report_action(){
         let mut s=MonitorStore::new();
