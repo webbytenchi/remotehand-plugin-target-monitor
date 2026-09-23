@@ -620,9 +620,10 @@ fn default_target() -> MonitorTarget {
         id: DEFAULT_TARGET_ID.into(), name: DEFAULT_TARGET_NAME.into(), address: DEFAULT_TARGET.into(),
         enabled: true, ping_enabled: true, show_in_system_tray: false, tcp_checks: vec![], http_checks: vec![],
         topbar: TopbarConfig::default(), graph_color: None, graph_normal_color: default_graph_normal_color(),
-        graph_high_color: default_graph_high_color(), graph_offline_color: default_graph_offline_color(),
-        target_name_color: default_target_name_color(), latency_color: default_latency_color(),
-        background_color: default_background_color(), border_color: default_border_color(),
+        graph_high_color: default_graph_high_color(), graph_critical_color: default_graph_critical_color(),
+        graph_offline_color: default_graph_offline_color(), target_name_color: default_target_name_color(),
+        latency_color: default_latency_color(), background_color: default_background_color(),
+        border_color: default_border_color(), graph_thresholds: BTreeMap::new(),
     }
 }
 fn default_config() -> StoredConfig {
