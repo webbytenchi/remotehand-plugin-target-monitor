@@ -362,6 +362,8 @@ struct TargetMonitor {
     last_state: String,
     pending_state: String,
     pending_count: u32,
+    last_reachable_at: Option<u64>,
+    offline_since: Option<u64>,
     tcp_results: BTreeMap<String, TcpResult>,
     http_results: BTreeMap<String, HttpResult>,
     metric_history: BTreeMap<String, Vec<MetricRecord>>,
@@ -378,6 +380,8 @@ impl TargetMonitor {
             last_state: "READY".into(),
             pending_state: "READY".into(),
             pending_count: 0,
+            last_reachable_at: None,
+            offline_since: None,
             tcp_results: BTreeMap::new(),
             http_results: BTreeMap::new(),
             metric_history: BTreeMap::new(),
@@ -405,6 +409,11 @@ impl TargetMonitor {
         }
         let timestamp = now_ms();
         let latency = sample.get("latencyMs").and_then(Value::as_f64);
+        if latency.is_some() { self.last_reachable_at = Some(timestamp); }
+        if previous_state != self.last_state {
+            if self.last_state == "OFFLINE" { self.offline_since = Some(timestamp); }
+            else if previous_state == "OFFLINE" { self.offline_since = None; }
+        }
         self.samples.push(SampleRecord {
             timestamp,
             latency_ms: latency,
@@ -446,6 +455,8 @@ impl TargetMonitor {
             "pingState": self.last_state,
             "currentLatencyMs": latest.and_then(|s| s.latency_ms),
             "packetLossPercent": latest.map(|s| s.packet_loss_percent).unwrap_or(0.0),
+            "lastReachableAt": self.last_reachable_at,
+            "offlineSince": self.offline_since,
             "history": ping_history,
             "tcpResults": self.tcp_results.values().collect::<Vec<_>>(),
             "httpResults": self.http_results.values().collect::<Vec<_>>(),
@@ -940,6 +951,7 @@ mod tests {
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
+    #[test] fn ping_tracks_last_reachable_and_offline_since(){let mut m=TargetMonitor::new(default_target());m.last_state="NORMAL".into();m.pending_state="NORMAL".into();m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}));let reachable=m.last_reachable_at;assert!(reachable.is_some());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}));assert!(m.offline_since.is_none());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}));assert_eq!(m.last_state,"OFFLINE");assert!(m.offline_since.is_some());assert_eq!(m.last_reachable_at,reachable);m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}));m.record_ping(&json!({"state":"NORMAL","latencyMs":11.0,"packetLossPercent":0.0}));assert_eq!(m.last_state,"NORMAL");assert!(m.offline_since.is_none());assert!(m.last_reachable_at.unwrap()>=reachable.unwrap());}
     #[test] fn replace_config_prunes_removed_tcp_results(){let mut s=MonitorStore::new();let mut c=s.config.clone();c.targets[0].tcp_checks=vec![TcpCheck{id:"keep".into(),name:"Keep".into(),port:80,enabled:true,alert_rule_ids:vec![]},TcpCheck{id:"drop".into(),name:"Drop".into(),port:22,enabled:true,alert_rule_ids:vec![]}];s.replace_config(c.clone());let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.tcp_results.insert("keep".into(),TcpResult{id:"keep".into(),name:"Keep".into(),port:80,reachable:true,latency_ms:Some(1.0),error:None,timestamp:1});m.tcp_results.insert("drop".into(),TcpResult{id:"drop".into(),name:"Drop".into(),port:22,reachable:false,latency_ms:None,error:None,timestamp:1});c.targets[0].tcp_checks.retain(|x|x.id=="keep");s.replace_config(c);let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();assert_eq!(m.tcp_results.len(),1);assert!(m.tcp_results.contains_key("keep"));assert!(!m.tcp_results.contains_key("drop"));}
     #[test] fn ping_graph_series_keeps_offline_samples_and_sample_colors(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.samples=vec![SampleRecord{timestamp:1,latency_ms:Some(12.0),packet_loss_percent:0.0,state:"NORMAL".into()},SampleRecord{timestamp:2,latency_ms:Some(250.0),packet_loss_percent:0.0,state:"HIGH LATENCY".into()},SampleRecord{timestamp:3,latency_ms:None,packet_loss_percent:100.0,state:"OFFLINE".into()}];let series=graph_series_for(m,"ping.latency");assert_eq!(series.len(),3);assert_eq!(series[0]["color"],json!(m.target.graph_normal_color));assert_eq!(series[1]["color"],json!(m.target.graph_high_color));assert_eq!(series[2]["color"],json!(m.target.graph_offline_color));assert!(series[2]["value"].is_null());}
 }
