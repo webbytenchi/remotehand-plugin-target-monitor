@@ -133,13 +133,29 @@ struct SoundConfig {
 struct LegacyAlertRule {
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sound_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notification_enabled: Option<bool>,
     #[serde(default = "default_legacy_cooldown")]
     cooldown_seconds: u64,
     #[serde(default)]
     sound: Option<SoundConfig>,
 }
 fn default_legacy_cooldown() -> u64 { 60 }
-fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule { LegacyAlertRule { enabled: true, cooldown_seconds, sound: None } }
+fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule {
+    LegacyAlertRule {
+        enabled: true,
+        sound_enabled: Some(true),
+        notification_enabled: Some(true),
+        cooldown_seconds,
+        sound: None,
+    }
+}
+impl LegacyAlertRule {
+    fn sound_enabled(&self) -> bool { self.sound_enabled.unwrap_or(self.enabled) }
+    fn notification_enabled(&self) -> bool { self.notification_enabled.unwrap_or(self.enabled) }
+}
 impl Default for LegacyAlertRule {
     fn default() -> Self { legacy_rule(default_legacy_cooldown()) }
 }
@@ -885,7 +901,6 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&
     monitor.previous_values.insert(source.into(),current);
 }
 fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
-    if !alerts.enabled{return;}
     let current=monitor.last_state.clone();
     let selection=if let Some((previous,next))=transition {
         match (previous.as_str(),next.as_str()) {
@@ -902,14 +917,24 @@ fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&L
         }
     } else { None };
     let Some((kind,rule,reminder))=selection else{return};
-    if !rule.enabled{return;}
+    let play_sound=alerts.enabled && rule.sound_enabled();
+    let show_notification=rule.notification_enabled();
+    if !play_sound && !show_notification{return;}
     let now=now_ms();
     let interval=if reminder{alerts.reminder_interval_seconds}else{rule.cooldown_seconds}.saturating_mul(1000);
     if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
     monitor.last_legacy_alert_at.insert(kind.to_string(),now);
     let target=&monitor.target;
-    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"reminder":reminder,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
-    emit_legacy_notification(output,monitor,kind,reminder);
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
+        "targetId":target.id,
+        "targetName":target.name,
+        "alertType":kind,
+        "reminder":reminder,
+        "playSound":play_sound,
+        "sound":sound_payload(&rule.sound),
+        "fallbackBeep":play_sound && rule.sound.is_none()
+    })});
+    if show_notification{emit_legacy_notification(output,monitor,kind,reminder);}
 }
 
 fn source_value(monitor:&TargetMonitor,source:&str)->Value{
@@ -1262,6 +1287,8 @@ mod tests {
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
     #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
     #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
+    #[test] fn legacy_alert_channel_flags_fall_back_to_old_enabled_field(){let enabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":true,"cooldownSeconds":60,"sound":null})).unwrap();assert!(enabled.sound_enabled());assert!(enabled.notification_enabled());let disabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(!disabled.sound_enabled());assert!(!disabled.notification_enabled());}
+    #[test] fn legacy_alert_channel_flags_can_be_independent(){let rule:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"soundEnabled":true,"notificationEnabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(rule.sound_enabled());assert!(!rule.notification_enabled());}
     #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn source_formatting_applies_to_display_without_changing_raw_value(){
