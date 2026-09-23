@@ -1390,6 +1390,17 @@ fn main()->Result<(),String>{
                     Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
                 }
             }
+            "monitor.clipboard.write"=>{
+                let text=request.params.get("text").and_then(Value::as_str).unwrap_or("");
+                if text.is_empty()||text.len()>4096 {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"clipboard text must be 1-4096 bytes".into()}
+                } else {
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"clipboard.write",json!({"text":text})) {
+                        Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
             "monitor.status"=>{let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}}
             "monitor.config.set"=>{
                 let config:Result<StoredConfig,_>=serde_json::from_value(request.params.clone());
