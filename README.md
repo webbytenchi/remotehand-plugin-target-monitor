@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.0** is the first feature-complete Target Monitor release candidate.
+**Target Monitor v0.7.0** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
