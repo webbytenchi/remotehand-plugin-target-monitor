@@ -419,6 +419,7 @@ struct NetworkIdentity {
     public_ip: Option<String>,
     public_ip_error: Option<String>,
     interfaces: Vec<Value>,
+    updated_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -844,7 +845,7 @@ fn network_identity_topbar_options(identity:&NetworkIdentity)->Vec<Value>{
     options
 }
 fn network_identity_value(identity:&NetworkIdentity)->Value{
-    json!({"publicIp":identity.public_ip,"publicIpError":identity.public_ip_error,"interfaces":identity.interfaces,"topbarOptions":network_identity_topbar_options(identity)})
+    json!({"publicIp":identity.public_ip,"publicIpError":identity.public_ip_error,"interfaces":identity.interfaces,"topbarOptions":network_identity_topbar_options(identity),"updatedAt":identity.updated_at})
 }
 
 fn network_identity_topbar_item(identity:&NetworkIdentity,selected_source:&str)->Value{
@@ -1289,6 +1290,7 @@ fn main()->Result<(),String>{
                     Ok(address)=>{guard.network_identity.public_ip=Some(address);guard.network_identity.public_ip_error=None;}
                     Err(error)=>{guard.network_identity.public_ip=None;guard.network_identity.public_ip_error=Some(error);}
                 }
+                guard.network_identity.updated_at=Some(now_ms());
                 let _=emit_surfaces(&public_output,&guard);
             }
         });
@@ -1395,6 +1397,7 @@ fn main()->Result<(),String>{
                             public_ip,
                             public_ip_error,
                             interfaces:interfaces.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default(),
+                            updated_at:Some(now_ms()),
                         };
                         if let Ok(mut guard)=store.lock(){guard.network_identity=identity.clone();let _=emit_surfaces(&output_tx,&guard);}
                         PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:network_identity_value(&identity),error:String::new()}
