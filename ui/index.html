@@ -127,6 +127,16 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
     <div class="field full"><span class="muted">Leave a value blank to disable that threshold. Critical is evaluated before Warning.</span></div>
    </div>
   </div>
+  <div class="appearance-group appearance-thresholds">
+   <div class="appearance-group-title">Source formatting</div>
+   <div class="field"><label>Source</label><select id="sourceFormatSource"></select></div>
+   <div id="sourceFormatNote" class="threshold-note" hidden></div>
+   <div id="sourceFormatControls" class="fields">
+    <div class="field"><label>Prefix</label><input id="sourceFormatPrefix" maxlength="24" placeholder="e.g. $"></div>
+    <div class="field"><label>Suffix</label><input id="sourceFormatSuffix" maxlength="24" placeholder="e.g. °C, %, TH/s"></div>
+    <div class="field full"><span class="muted">Formatting changes display text only. Thresholds, graphs, and alerts continue using the raw value.</span></div>
+   </div>
+  </div>
  </div>
  <div class="appearance-actions"><button id="resetTargetColors" class="btn" type="button">Reset colors</button></div>
 </div>
@@ -163,7 +173,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
 <script>
 (()=>{"use strict";
 const $=id=>document.getElementById(id), bridge=window.remotehand;let requestChain=Promise.resolve();const request=(method,params={})=>{if(!bridge?.request)return Promise.reject(new Error("plugin bridge unavailable"));const run=()=>bridge.request(method,params);const p=requestChain.then(run,run);requestChain=p.catch(()=>{});return p};
-let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,sound:null},offline:{enabled:true,sound:null},recovery:{enabled:true,sound:null}},alertRules:[]},targets:[]};let editingTarget=null,editingRule=null,editingHttp=null,targetDraft=null,httpPreviewFields=[],httpPreviewPage=1,httpPreviewPageSize=5,detailTargetId=null,contextTargetId=null,editingAlertField=null,reportHttpFilters={},pendingDeleteRuleId=null,legacyDraft=null,legacyDraftDirty=false,settingsDirty=false,graphThresholdSource="";
+let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,sound:null},offline:{enabled:true,sound:null},recovery:{enabled:true,sound:null}},alertRules:[]},targets:[]};let editingTarget=null,editingRule=null,editingHttp=null,targetDraft=null,httpPreviewFields=[],httpPreviewPage=1,httpPreviewPageSize=5,detailTargetId=null,contextTargetId=null,editingAlertField=null,reportHttpFilters={},pendingDeleteRuleId=null,legacyDraft=null,legacyDraftDirty=false,settingsDirty=false,graphThresholdSource="",sourceFormatSource="";
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id=prefix=>prefix+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,8);
 const notice=(m,kind="info")=>{if(kind===true)kind="error";const e=$("notice");$("noticeText").textContent=m||"";e.className="notice"+(kind&&kind!=="info"?" "+kind:"");e.hidden=!m};$("noticeClose").onclick=()=>{const e=$("notice");$("noticeText").textContent="";e.hidden=true};
@@ -234,7 +244,7 @@ function render(){renderTargets();renderRules();renderSettings()}
 function countRuleUses(ruleId){let n=0;for(const t of state.config.targets){for(const c of t.tcpChecks||[])if((c.alertRuleIds||[]).includes(ruleId))n++;for(const h of t.httpChecks||[])for(const ids of Object.values(h.fieldAlerts||{}))if(ids.includes(ruleId))n++}return n}
 async function persist(message="Saved."){try{normalizeStatus(await request("monitor.config.set",state.config));notice(message,"success");return true}catch(e){notice(String(e),"error");await refresh();return false}}
 const DEFAULT_TARGET_COLORS={graphNormalColor:"#70a7e8",graphHighColor:"#f1cf87",graphCriticalColor:"#efaaaa",graphOfflineColor:"#8f9baa",targetNameColor:"#a8b4c2",latencyColor:"#dce4ee",backgroundColor:"#16263a",borderColor:"#3b5f8d"};
-function baseTarget(){return{id:id("target"),name:"",address:"",enabled:true,pingEnabled:true,showInSystemTray:false,tcpChecks:[],httpChecks:[],topbar:{enabled:true,titleSource:"target.name",valueSource:"ping.latency",graphSource:"ping.latency"},graphThresholds:{},...DEFAULT_TARGET_COLORS}}
+function baseTarget(){return{id:id("target"),name:"",address:"",enabled:true,pingEnabled:true,showInSystemTray:false,tcpChecks:[],httpChecks:[],topbar:{enabled:true,titleSource:"target.name",valueSource:"ping.latency",graphSource:"ping.latency"},graphThresholds:{},sourceFormats:{},...DEFAULT_TARGET_COLORS}}
 function loadTargetColors(target){
  $("colorGraphNormal").value=target.graphNormalColor||DEFAULT_TARGET_COLORS.graphNormalColor;
  $("colorGraphHigh").value=target.graphHighColor||DEFAULT_TARGET_COLORS.graphHighColor;
@@ -254,6 +264,39 @@ function readTargetColors(target){
  target.latencyColor=$("colorValue").value;
  target.backgroundColor=$("colorBackground").value;
  target.borderColor=$("colorBorder").value;
+}
+function builtinSourceFormat(source){
+ if(source==="ping.latency"||(source.startsWith("tcp:")&&source.endsWith(".latency"))||(source.startsWith("http:")&&source.endsWith(".responseTime")))return{prefix:"",suffix:" ms"};
+ return{prefix:"",suffix:""};
+}
+function formattingSources(){
+ const s=availableSources(),seen=new Set(),out=[];
+ for(const [value,label] of [...s.text,...s.numeric]){
+  if(value==="none"||value==="target.name"||seen.has(value))continue;
+  seen.add(value);out.push([value,label]);
+ }
+ return out;
+}
+function saveSourceFormatControls(target){
+ if(!target||!sourceFormatSource)return;
+ target.sourceFormats=target.sourceFormats||{};
+ const prefix=$("sourceFormatPrefix").value,suffix=$("sourceFormatSuffix").value,builtin=builtinSourceFormat(sourceFormatSource);
+ if(prefix===builtin.prefix&&suffix===builtin.suffix)delete target.sourceFormats[sourceFormatSource];
+ else target.sourceFormats[sourceFormatSource]={prefix,suffix};
+}
+function loadSourceFormatControls(target,source){
+ sourceFormatSource=source||"";
+ const controls=$("sourceFormatControls"),note=$("sourceFormatNote");
+ if(!sourceFormatSource){controls.hidden=true;note.hidden=false;note.textContent="No configurable source is available yet.";return}
+ note.hidden=true;controls.hidden=false;
+ const fmt=(target?.sourceFormats||{})[sourceFormatSource]||builtinSourceFormat(sourceFormatSource);
+ $("sourceFormatPrefix").value=fmt.prefix||"";
+ $("sourceFormatSuffix").value=fmt.suffix||"";
+}
+function pruneSourceFormats(target){
+ target.sourceFormats=target.sourceFormats||{};
+ const valid=new Set(formattingSources().map(x=>x[0]));
+ for(const source of Object.keys(target.sourceFormats)){if(!valid.has(source))delete target.sourceFormats[source]}
 }
 function saveGraphThresholdControls(target){
  if(!target||!graphThresholdSource||graphThresholdSource==="none"||graphThresholdSource==="ping.latency")return;
@@ -285,15 +328,16 @@ function pruneGraphThresholds(target){
  for(const source of Object.keys(target.graphThresholds)){if(!valid.has(source)||source==="none"||source==="ping.latency")delete target.graphThresholds[source]}
 }
 function resetTargetChildEditors(){editingHttp=null;httpPreviewFields=[];for(const modalId of ["tcpModal","httpModal","fieldAlertModal"]){$(modalId).classList.remove("open")}if($("httpModal"))$("httpModal").dataset.check="";if($("httpPreview")){$("httpPreview").hidden=true;$("httpPreview").innerHTML=""}}
-function editTarget(targetId=null){resetTargetChildEditors();editingTarget=targetId;graphThresholdSource="";targetDraft=structuredClone(targetId?configTarget(targetId):baseTarget());targetDraft.graphThresholds=targetDraft.graphThresholds||{};$("targetModalTitle").textContent=targetId?"Edit Target":"Add Target";$("tName").value=targetDraft.name;$("tAddress").value=targetDraft.address;$("tEnabled").checked=targetDraft.enabled!==false;$("tPing").checked=targetDraft.pingEnabled!==false;$("tTray").checked=!!targetDraft.showInSystemTray;$("tbEnabled").checked=targetDraft.topbar?.enabled!==false;loadTargetColors(targetDraft);renderTargetLists();refreshSourceOptions();open("targetModal")}
+function editTarget(targetId=null){resetTargetChildEditors();editingTarget=targetId;graphThresholdSource="";sourceFormatSource="";targetDraft=structuredClone(targetId?configTarget(targetId):baseTarget());targetDraft.graphThresholds=targetDraft.graphThresholds||{};targetDraft.sourceFormats=targetDraft.sourceFormats||{};$("targetModalTitle").textContent=targetId?"Edit Target":"Add Target";$("tName").value=targetDraft.name;$("tAddress").value=targetDraft.address;$("tEnabled").checked=targetDraft.enabled!==false;$("tPing").checked=targetDraft.pingEnabled!==false;$("tTray").checked=!!targetDraft.showInSystemTray;$("tbEnabled").checked=targetDraft.topbar?.enabled!==false;loadTargetColors(targetDraft);renderTargetLists();refreshSourceOptions();open("targetModal")}
 $("resetTargetColors").onclick=()=>loadTargetColors(DEFAULT_TARGET_COLORS);
 $("tbGraph").onchange=()=>{saveGraphThresholdControls(targetDraft);targetDraft.topbar=targetDraft.topbar||{};targetDraft.topbar.graphSource=$("tbGraph").value;loadGraphThresholdControls(targetDraft,$("tbGraph").value)};
+$("sourceFormatSource").onchange=()=>{saveSourceFormatControls(targetDraft);loadSourceFormatControls(targetDraft,$("sourceFormatSource").value)};
 $("addTarget").onclick=()=>editTarget();$("reportEdit").onclick=()=>{if(detailTargetId){const id=detailTargetId;cancelModal("reportModal");editTarget(id)}};
 function availableSources(){const t=targetDraft||baseTarget(),text=[["none","None"],["target.name","Target name"]],numeric=[["none","None"],["ping.latency","Ping latency"]];for(const c of t.tcpChecks||[]){text.push([`tcp:${c.id}.reachable`,`${c.name} reachable`]);numeric.push([`tcp:${c.id}.latency`,`${c.name} connection time`])}for(const h of t.httpChecks||[]){numeric.push([`http:${h.id}.responseTime`,`${h.name} response time`]);numeric.push([`http:${h.id}.status`,`${h.name} status code`]);const rr=runtimeTarget(t.id)?.httpResults?.find(x=>x.id===h.id);const known={...(h.discoveredFields||{})};for(const [f,v] of Object.entries(rr?.fields||{}))known[f]=typeof v;for(const [f,type] of Object.entries(known)){text.push([`http:${h.id}.${f}`,`${h.name} · ${f}`]);if(type==="number")numeric.push([`http:${h.id}.${f}`,`${h.name} · ${f}`])}}return{text,numeric}}
 function fillSelect(el,items,current){el.innerHTML=items.map(([v,l])=>`<option value="${esc(v)}">${esc(l)}</option>`).join("");if(items.some(x=>x[0]===current))el.value=current}
-function refreshSourceOptions(){if(graphThresholdSource)saveGraphThresholdControls(targetDraft);const s=availableSources(),tb=targetDraft.topbar||{};fillSelect($("tbTitle"),s.text,tb.titleSource||"target.name");fillSelect($("tbValue"),[...s.text,...s.numeric.filter(x=>!s.text.some(y=>y[0]===x[0]))],tb.valueSource||"ping.latency");fillSelect($("tbGraph"),s.numeric,tb.graphSource||"ping.latency");loadGraphThresholdControls(targetDraft,$("tbGraph").value)}
+function refreshSourceOptions(){if(graphThresholdSource)saveGraphThresholdControls(targetDraft);if(sourceFormatSource)saveSourceFormatControls(targetDraft);const s=availableSources(),tb=targetDraft.topbar||{};fillSelect($("tbTitle"),s.text,tb.titleSource||"target.name");fillSelect($("tbValue"),[...s.text,...s.numeric.filter(x=>!s.text.some(y=>y[0]===x[0]))],tb.valueSource||"ping.latency");fillSelect($("tbGraph"),s.numeric,tb.graphSource||"ping.latency");loadGraphThresholdControls(targetDraft,$("tbGraph").value);const formats=formattingSources(),preferred=sourceFormatSource&&formats.some(x=>x[0]===sourceFormatSource)?sourceFormatSource:(formats.some(x=>x[0]===$("tbValue").value)?$("tbValue").value:(formats.some(x=>x[0]===$("tbGraph").value)?$("tbGraph").value:(formats[0]?.[0]||"")));fillSelect($("sourceFormatSource"),formats,preferred);loadSourceFormatControls(targetDraft,$("sourceFormatSource").value)}
 function renderTargetLists(){$("tcpList").innerHTML=(targetDraft.tcpChecks||[]).map((c,i)=>`<div class="list-row"><span><b>${esc(c.name)}</b><div class="muted">Port ${c.port}</div></span><span class="${c.enabled===false?"muted":"ok"}">${c.enabled===false?"Disabled":"Enabled"}</span><button class="btn danger" data-tcp-remove="${i}">Remove</button></div>`).join("")||"<div class='muted'>No TCP checks.</div>";$("httpList").innerHTML=(targetDraft.httpChecks||[]).map((h,i)=>`<div class="list-row"><span><b>${esc(h.name)}</b><div class="muted">${esc(h.url)}</div></span><span class="muted">${esc(h.responseMode||"auto")}</span><span><button class="btn" data-http-edit="${i}">Configure</button> <button class="btn danger" data-http-remove="${i}">Remove</button></span></div>`).join("")||"<div class='muted'>No HTTP requests.</div>";document.querySelectorAll("[data-tcp-remove]").forEach(b=>b.onclick=()=>{targetDraft.tcpChecks.splice(+b.dataset.tcpRemove,1);renderTargetLists();refreshSourceOptions()});document.querySelectorAll("[data-http-remove]").forEach(b=>b.onclick=()=>{targetDraft.httpChecks.splice(+b.dataset.httpRemove,1);renderTargetLists();refreshSourceOptions()});document.querySelectorAll("[data-http-edit]").forEach(b=>b.onclick=e=>{e.preventDefault();e.stopPropagation();openHttp(+b.dataset.httpEdit)})}
-$("saveTarget").onclick=async()=>{for(const id of ["graphWarningValue","graphCriticalValue"]){const raw=$(id).value.trim();if(raw!==""&&!Number.isFinite(Number(raw)))return notice("Graph threshold values must be valid numbers.","error")}targetDraft.name=$("tName").value.trim();targetDraft.address=$("tAddress").value.trim();if(!targetDraft.name||!targetDraft.address)return notice("Target name and host/IP are required.","error");targetDraft.enabled=$("tEnabled").checked;targetDraft.pingEnabled=$("tPing").checked;targetDraft.showInSystemTray=$("tTray").checked;saveGraphThresholdControls(targetDraft);targetDraft.topbar={enabled:$("tbEnabled").checked,titleSource:$("tbTitle").value,valueSource:$("tbValue").value,graphSource:$("tbGraph").value};readTargetColors(targetDraft);pruneGraphThresholds(targetDraft);if(editingTarget){state.config.targets[state.config.targets.findIndex(x=>x.id===editingTarget)]=targetDraft}else state.config.targets.push(targetDraft);close("targetModal");resetTargetChildEditors();await persist("Target saved.")}
+$("saveTarget").onclick=async()=>{if($("sourceFormatPrefix").value.length>24||$("sourceFormatSuffix").value.length>24)return notice("Source prefix/suffix must be 24 characters or less.","error");for(const id of ["graphWarningValue","graphCriticalValue"]){const raw=$(id).value.trim();if(raw!==""&&!Number.isFinite(Number(raw)))return notice("Graph threshold values must be valid numbers.","error")}targetDraft.name=$("tName").value.trim();targetDraft.address=$("tAddress").value.trim();if(!targetDraft.name||!targetDraft.address)return notice("Target name and host/IP are required.","error");targetDraft.enabled=$("tEnabled").checked;targetDraft.pingEnabled=$("tPing").checked;targetDraft.showInSystemTray=$("tTray").checked;saveGraphThresholdControls(targetDraft);saveSourceFormatControls(targetDraft);targetDraft.topbar={enabled:$("tbEnabled").checked,titleSource:$("tbTitle").value,valueSource:$("tbValue").value,graphSource:$("tbGraph").value};readTargetColors(targetDraft);pruneGraphThresholds(targetDraft);pruneSourceFormats(targetDraft);if(editingTarget){state.config.targets[state.config.targets.findIndex(x=>x.id===editingTarget)]=targetDraft}else state.config.targets.push(targetDraft);close("targetModal");resetTargetChildEditors();await persist("Target saved.")}
 async function removeTarget(targetId){if(state.config.targets.length===1)return;state.config.targets=state.config.targets.filter(x=>x.id!==targetId);await persist("Target removed.")}
 $("addTcp").onclick=e=>{e.preventDefault();e.stopPropagation();$("tcpPreset").value="";$("tcpName").value="";$("tcpPort").value="";renderRuleMulti($("tcpRules"),[]);open("tcpModal")};
 $("tcpPreset").onchange=()=>{const v=$("tcpPreset").value;if(v){const [n,p]=v.split("|");$("tcpName").value=n;$("tcpPort").value=p}};
