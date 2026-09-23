@@ -55,11 +55,13 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ### Verification
 
+- Final Windows Rust validation passed with 29 tests and 0 failures.
+- Final Windows release package built successfully.
+- Final packaged-plugin smoke test passed.
 - Manual Windows acceptance confirmed native alert notifications.
 - Manual Windows acceptance confirmed notification click routing and queue plumbing after the RemoteHand core update.
 - Manual UI acceptance confirmed adaptive tray graphs, multiline tooltips, source formatting, graph thresholds, alert-aware Value coloring, and final Appearance layout.
 - Embedded Target Monitor UI JavaScript validation passes.
-- Release validation still requires the final local `cargo test` and Windows release-package build after the v0.7.0 metadata change.
 
 ### Future
 
