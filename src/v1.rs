@@ -127,11 +127,15 @@ struct SoundConfig {
 struct LegacyAlertRule {
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default = "default_legacy_cooldown")]
+    cooldown_seconds: u64,
     #[serde(default)]
     sound: Option<SoundConfig>,
 }
+fn default_legacy_cooldown() -> u64 { 60 }
+fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule { LegacyAlertRule { enabled: true, cooldown_seconds, sound: None } }
 impl Default for LegacyAlertRule {
-    fn default() -> Self { Self { enabled: true, sound: None } }
+    fn default() -> Self { legacy_rule(default_legacy_cooldown()) }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,10 +148,22 @@ struct LegacyAlertConfig {
     offline: LegacyAlertRule,
     #[serde(default)]
     recovery: LegacyAlertRule,
+    #[serde(default)]
+    reminders_enabled: bool,
+    #[serde(default = "default_reminder_interval")]
+    reminder_interval_seconds: u64,
 }
+fn default_reminder_interval() -> u64 { 300 }
 impl Default for LegacyAlertConfig {
     fn default() -> Self {
-        Self { enabled: true, high_latency: LegacyAlertRule::default(), offline: LegacyAlertRule::default(), recovery: LegacyAlertRule::default() }
+        Self {
+            enabled: true,
+            high_latency: legacy_rule(60),
+            offline: legacy_rule(300),
+            recovery: legacy_rule(5),
+            reminders_enabled: false,
+            reminder_interval_seconds: default_reminder_interval(),
+        }
     }
 }
 
@@ -193,6 +209,8 @@ struct HttpCheck {
     monitor_whole_response: bool,
     #[serde(default)]
     detect_changes: bool,
+    #[serde(default)]
+    discovered_fields: BTreeMap<String, String>,
     #[serde(default)]
     field_alerts: BTreeMap<String, Vec<String>>,
 }
@@ -345,6 +363,7 @@ struct TargetMonitor {
     metric_history: BTreeMap<String, Vec<MetricRecord>>,
     previous_values: BTreeMap<String, Value>,
     active_alerts: BTreeMap<String, ActiveAlert>,
+    last_legacy_alert_at: BTreeMap<String, u64>,
 }
 impl TargetMonitor {
     fn new(target: MonitorTarget) -> Self {
@@ -359,6 +378,7 @@ impl TargetMonitor {
             metric_history: BTreeMap::new(),
             previous_values: BTreeMap::new(),
             active_alerts: BTreeMap::new(),
+            last_legacy_alert_at: BTreeMap::new(),
         }
     }
     fn record_ping(&mut self, sample: &Value) -> Option<(String, String)> {
@@ -669,24 +689,38 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&
     }
     monitor.previous_values.insert(source.into(),current);
 }
-fn legacy_alert(output:&mpsc::Sender<Value>,target:&MonitorTarget,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
+fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
     if !alerts.enabled{return;}
-    let Some((previous,current))=transition else{return};
-    let (kind,rule)=match (previous.as_str(),current.as_str()) {
-        (_,"OFFLINE")=>("offline",&alerts.offline),
-        (_,"HIGH LATENCY")=>("highLatency",&alerts.high_latency),
-        ("OFFLINE","NORMAL")|("HIGH LATENCY","NORMAL")=>("recovery",&alerts.recovery),
-        _=>return
-    };
+    let current=monitor.last_state.clone();
+    let selection=if let Some((previous,next))=transition {
+        match (previous.as_str(),next.as_str()) {
+            ("NORMAL","HIGH LATENCY")|("READY","HIGH LATENCY")=>Some(("highLatency",&alerts.high_latency,false)),
+            ("NORMAL","OFFLINE")|("HIGH LATENCY","OFFLINE")|("READY","OFFLINE")=>Some(("offline",&alerts.offline,false)),
+            ("OFFLINE","NORMAL")|("OFFLINE","HIGH LATENCY")|("HIGH LATENCY","NORMAL")=>Some(("recovery",&alerts.recovery,false)),
+            _=>None
+        }
+    } else if alerts.reminders_enabled {
+        match current.as_str() {
+            "HIGH LATENCY"=>Some(("highLatency",&alerts.high_latency,true)),
+            "OFFLINE"=>Some(("offline",&alerts.offline,true)),
+            _=>None
+        }
+    } else { None };
+    let Some((kind,rule,reminder))=selection else{return};
     if !rule.enabled{return;}
-    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+    let now=now_ms();
+    let interval=if reminder{alerts.reminder_interval_seconds}else{rule.cooldown_seconds}.saturating_mul(1000);
+    if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
+    monitor.last_legacy_alert_at.insert(kind.to_string(),now);
+    let target=&monitor.target;
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"reminder":reminder,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
 }
 
 fn sample_target(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],legacy:&LegacyAlertConfig){
     let target=monitor.target.clone();
     let ping=sample_ping(&target);
     let transition=monitor.record_ping(&ping);
-    legacy_alert(output,&target,legacy,transition);
+    legacy_alert(output,monitor,legacy,transition);
     for check in target.tcp_checks.iter().filter(|c|c.enabled) {
         let result=sample_tcp(&target,check);
         if let Some(ms)=result.latency_ms { monitor.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp); }
@@ -762,7 +796,7 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&MonitorStore)->Result<(),Str
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"topbar.update",payload:topbar_value(store)})?;
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray_value(store)})
 }
-fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":store.config,"alerts":store.config.alerts,"alertRules":store.config.alert_rules})}
+fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules})}
 
 fn main()->Result<(),String>{
     let plugin_id=std::env::var("REMOTEHAND_PLUGIN_ID").map_err(|_|"REMOTEHAND_PLUGIN_ID is missing".to_string())?;
