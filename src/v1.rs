@@ -835,6 +835,37 @@ fn network_identity_value(identity:&NetworkIdentity)->Value{
     json!({"publicIp":identity.public_ip,"publicIpError":identity.public_ip_error,"interfaces":identity.interfaces,"topbarOptions":network_identity_topbar_options(identity)})
 }
 
+fn network_identity_topbar_item(identity:&NetworkIdentity,selected_source:&str)->Value{
+    let options=network_identity_topbar_options(identity);
+    let selected=options.iter()
+        .find(|option|option.get("key").and_then(Value::as_str)==Some(selected_source))
+        .or_else(||options.iter().find(|option|option.get("key").and_then(Value::as_str)==Some("public")))
+        .or_else(||options.first());
+    let selected_address=selected.and_then(|option|option.get("address")).and_then(Value::as_str).unwrap_or("Unavailable");
+    let selected_label=selected.and_then(|option|option.get("label")).and_then(Value::as_str).unwrap_or("Network");
+    let selected_icon=selected.and_then(|option|option.get("icon")).and_then(Value::as_str).unwrap_or("globe");
+    let menu_items=options.iter().enumerate().take(24).map(|(index,option)|{
+        let address=option.get("address").and_then(Value::as_str).unwrap_or("");
+        json!({
+            "id":format!("network-ip-{index}"),
+            "label":option.get("label").and_then(Value::as_str).unwrap_or("IP address"),
+            "value":address,
+            "detail":option.get("detail").and_then(Value::as_str).unwrap_or("Click to copy"),
+            "icon":option.get("icon").and_then(Value::as_str).unwrap_or("ethernet"),
+            "action":{"type":"plugin-call","method":"monitor.clipboard.write","params":{"text":address}}
+        })
+    }).collect::<Vec<_>>();
+    json!({
+        "id":"target-monitor:network-identity",
+        "title":"Network Identity",
+        "tooltip":format!("{selected_label} · {selected_address}"),
+        "size":{"width":124,"height":44},
+        "icon":selected_icon,
+        "content":{"type":"text","label":selected_address,"tone":"accent","fontSize":10},
+        "menu":{"items":menu_items}
+    })
+}
+
 fn host_request(input:&mut impl Read, output:&mpsc::Sender<Value>, request_id:&mut u64, method:&'static str, params:Value)->Result<Value,String>{
     let id=*request_id; *request_id+=1;
     send_outbound(output,PluginHostRequest{message_type:"plugin.request",request_id:id,method,params})?;
@@ -1198,6 +1229,10 @@ fn topbar_value(store:&MonitorStore)->Value{
         if unread>0{children.push(json!({"type":"badge","label":unread.to_string(),"tone":"warning","fontSize":9}));}
         json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,&m.target.topbar.graph_source),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
     }).collect::<Vec<_>>();
+    let mut items=items;
+    if store.config.show_network_identity_topbar {
+        items.push(network_identity_topbar_item(&store.network_identity,&store.config.network_identity_topbar_source));
+    }
     json!({"items":items})
 }
 fn tray_value(store:&MonitorStore)->Value{
