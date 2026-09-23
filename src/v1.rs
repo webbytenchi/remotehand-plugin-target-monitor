@@ -131,10 +131,6 @@ struct LegacyAlertRule {
     cooldown_seconds: u64,
     #[serde(default)]
     sound: Option<SoundConfig>,
-    #[serde(default)]
-    reminders_enabled: bool,
-    #[serde(default = "default_reminder_interval")]
-    reminder_interval_seconds: u64,
 }
 fn default_legacy_cooldown() -> u64 { 60 }
 fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule { LegacyAlertRule { enabled: true, cooldown_seconds, sound: None } }
@@ -183,6 +179,10 @@ struct GenericAlertRule {
     value: Option<Value>,
     #[serde(default)]
     sound: Option<SoundConfig>,
+    #[serde(default)]
+    reminders_enabled: bool,
+    #[serde(default = "default_reminder_interval")]
+    reminder_interval_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
