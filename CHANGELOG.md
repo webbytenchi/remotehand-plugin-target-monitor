@@ -4,6 +4,17 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.1 - 2026-09-24
+
+### Fixed
+
+- Corrected the Ping Alert Sounds master checkbox layout so it no longer inherits the global full-width input style inside RemoteHand.
+- Kept the checkbox left-aligned with its “Enable alert sounds” label across normal and narrow panel layouts.
+
+### Verification
+
+- Pending Windows packaged-plugin smoke test against RemoteHand v1.2.8.
+
 ## 0.7.0 - 2026-09-24
 
 ### Added
