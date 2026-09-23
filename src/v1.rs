@@ -981,7 +981,7 @@ fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->
     if graph_source!="none"{
         parts.push(format!("Graph: {} · last {}",source_label(monitor,graph_source),formatted_source_value(monitor,graph_source,true)));
     }
-    parts.join(" | ")
+    parts.join(" | ").chars().take(240).collect()
 }
 fn topbar_tone(state:&str)->&'static str{match state{"OFFLINE"=>"danger","DEGRADED"=>"warning","ONLINE"=>"accent",_=>"muted"}}
 fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value>{
@@ -1191,6 +1191,18 @@ mod tests {
         m.metric_history.insert("metric.temp".into(),vec![MetricRecord{timestamp:now_ms(),value:65.0}]);
         assert_eq!(m.metric_history["metric.temp"][0].value,65.0);
         assert_eq!(source_format(m,"metric.temp").suffix," °C");
+    }
+    #[test] fn topbar_and_tooltip_use_formatted_source_values(){
+        let mut s=MonitorStore::new();
+        {
+            let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+            m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}),3600);
+        }
+        let topbar=topbar_value(&s);
+        assert_eq!(topbar["items"][0]["content"]["children"][1]["value"],json!("12.0 ms"));
+        let tooltip=topbar["items"][0]["tooltip"].as_str().unwrap();
+        assert!(tooltip.contains("Value: Ping latency = 12.0 ms"));
+        assert!(tooltip.contains("Graph: Ping latency · last 12.0 ms"));
     }
     #[test] fn builtin_timing_sources_default_to_ms(){
         let s=MonitorStore::new();
