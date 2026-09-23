@@ -2,52 +2,69 @@
 
 Target Monitor is a RemoteHand plugin for monitoring hosts, services, and HTTP/HTTPS endpoints from one compact target model.
 
-It evolves from the proven RemoteHand Host Monitor v0.6.1 foundation while expanding beyond ICMP latency monitoring.
+It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expands monitoring beyond ICMP latency into TCP services, HTTP/HTTPS endpoints, reusable alerts, native notifications, richer history, and configurable RemoteHand surfaces.
 
-## Status
+## Current release
 
-Target Monitor 0.6.1 remains the stable repository baseline. Version 1.0.0 is implemented on the `feature/v1.0.0-target-monitor` development branch and is awaiting local/runtime acceptance before merge or tagging.
+**Target Monitor v0.7.0** is the first feature-complete Target Monitor release candidate.
 
-The v1 implementation preserves the validated ICMP/Ping foundation and adds TCP monitoring, HTTP/HTTPS monitoring, extraction, reusable alert rules, target reports, and configurable one-item-per-target top-bar presentation.
+It preserves the proven Host Monitor Ping foundation while adding:
 
-See `V1.0.0-DESIGN.md` for the agreed product design.
+- ICMP / Ping monitoring
+- multiple TCP checks per target
+- multiple HTTP / HTTPS checks per target
+- JSON, plain-text, and named-capture regex extraction
+- reusable alert rules
+- alert acknowledgment and reminders
+- per-target native Windows tray notifications
+- notification click-through to the originating target report
+- queued native notifications
+- configurable source prefix/suffix formatting
+- configurable graph thresholds and colors
+- configurable top-bar Title, Value, and Graph sources
+- separate normal/alert colors for the top-bar Value
+- configurable monitoring intervals and history retention
+- target reports with Ping, TCP, HTTP, and active-alert detail
+- per-target system-tray graph contributions
+
+See `V0.7.0-DESIGN.md` for the delivered product model.
 
 ## Core model
 
 A Target Monitor target may contain:
 
 - ICMP / Ping monitoring
-- Multiple TCP port reachability checks
-- Multiple HTTP / HTTPS checks
-- Background alert rules
-- One compact RemoteHand top-bar contribution
+- multiple TCP port reachability checks
+- multiple HTTP / HTTPS checks
+- reusable background alert rules
+- one compact RemoteHand top-bar contribution
+- an optional per-target system-tray graph
 
-One target always produces at most one Target Monitor top-bar item.
+One target produces at most one Target Monitor top-bar item.
 
-Monitoring, alert evaluation, and top-bar presentation are separate concerns.
+Monitoring, alert evaluation, presentation, and alert delivery are separate concerns.
 
 ## ICMP / Ping
 
-The existing Host Monitor ICMP implementation is the stable foundation for Target Monitor.
-
-It currently provides:
+Target Monitor preserves the proven Host Monitor Ping path:
 
 - real ICMP latency sampling
 - Normal / High Latency / Offline state classification
 - two-sample state confirmation to reduce flapping
-- rolling history
-- one-minute top-bar sparkline history
-- configurable appearance
+- time-based rolling history
+- one-minute default top-bar history
+- configurable sampling interval and history retention
 - state-change alert sounds
+- optional reminders
 - per-target tray contribution support
 
-The v1.0.0 work should preserve this behavior rather than rewrite it.
+Ping keeps its real state semantics rather than using generic numeric graph thresholds.
 
 ## TCP monitoring
 
 Targets may contain multiple TCP checks.
 
-Target Monitor will provide common service presets such as:
+Built-in presets include:
 
 - HTTP — 80
 - HTTPS — 443
@@ -61,49 +78,51 @@ Target Monitor will provide common service presets such as:
 - MySQL — 3306
 - PostgreSQL — 5432
 
-A Custom option will allow an arbitrary service name and port.
+A Custom option allows an arbitrary service name and port.
 
-TCP monitoring reports whether the configured service can be reached.
+TCP checks expose reachability and connection-time values for monitoring, presentation, and alerting.
 
 ## HTTP / HTTPS monitoring
 
-Targets may also contain one or more HTTP/HTTPS requests.
+Targets may contain one or more HTTP/HTTPS requests.
 
-Each request may capture:
+Each request can expose:
 
 - HTTP status
 - response time
 - content type
-- response body
-
-HTTP monitoring is intentionally content-agnostic.
+- raw or whole-response content
+- extracted fields
 
 ### JSON responses
 
-JSON replies can expose fields for:
+JSON fields are discovered automatically and can be used for:
 
-- friendly display
+- display
 - top-bar Value selection
 - numeric graphing
-- alert evaluation
+- reusable alert rules
+- source formatting
 
 ### Plain-text responses
 
-Plain-text replies can be displayed directly and monitored for value or content changes.
+Plain-text responses can be displayed directly, monitored as a whole value, and used for change detection.
 
 ### Regex extraction
 
 Non-JSON responses may use user-configured regular expressions with named capture groups.
 
-Captured values become monitored fields. Numeric captures may participate in numeric threshold alerts and graphing; text captures may participate in text alerts.
+Captured values become monitored fields. Numeric captures may be graphed or evaluated numerically; text captures may participate in text alerts.
 
-The configuration UI should provide a Test / Preview step before saving regex extraction.
+The configuration UI provides Test / Preview before saving extraction settings.
+
+HTML is treated as response content or readable text, not rendered as an arbitrary web page inside Target Monitor.
 
 ## Top bar
 
-Each target has one top-bar contribution.
+Each enabled target may publish one top-bar contribution.
 
-The user chooses what appears in its three presentation slots:
+The user independently chooses:
 
 - Title
 - Value
@@ -111,21 +130,64 @@ The user chooses what appears in its three presentation slots:
 
 Any slot may be disabled.
 
-For example:
+Example:
 
     Title: Bitaxe
-    Value: hashRate_10m
-    Graph: temp
+    Value: System Info · hashRate_10m
+    Graph: System Info · temp
 
-Fields that are not displayed in the top bar remain monitored and may still trigger alerts.
+Fields not displayed in the top bar remain monitored and may still trigger alerts.
+
+### Value colors
+
+The top-bar Value has two user-configurable colors:
+
+- Value normal
+- Value alert
+
+The Value switches to Alert color only when the exact selected Value source currently has an active alert.
+
+For Ping latency, High Latency and Offline use the Alert color; Normal uses the Normal color.
+
+An unrelated alert on another source does not recolor the displayed Value.
+
+### Source formatting
+
+Monitored values may define a display prefix and suffix, for example:
+
+- `$`
+- `°C`
+- `%`
+- `TH/s`
+
+Formatting affects presentation only. Graphs, thresholds, and alert evaluation continue to use raw values.
+
+## Graphs and visual thresholds
+
+Numeric graph sources can define optional Warning and Critical thresholds.
+
+Supported operators:
+
+- `>=`
+- `<=`
+- `>`
+- `<`
+- `=`
+
+Critical is evaluated before Warning.
+
+Graph colors are configurable for:
+
+- Series / normal
+- Warning
+- Critical
+- Unavailable / offline
+
+Ping uses its real Normal / High Latency / Offline state colors instead of generic thresholds.
 
 ## Alerts
 
-Target Monitor will provide a dedicated Alerts tab.
-
-Existing Ping alert behavior remains unchanged.
-
-HTTP/HTTPS monitored fields may be assigned reusable named alert rules.
+Target Monitor includes reusable named alert rules.
 
 Examples:
 
@@ -136,59 +198,85 @@ Examples:
 
 Numeric conditions include:
 
-- >=
-- <=
-- =
+- `>=`
+- `<=`
+- `=`
 
 Text/value rules include:
 
-- equals
-- changed
+- `equals`
+- `changed`
 
-A single field may have multiple alerts assigned.
+A monitored field may have zero, one, or multiple assigned alerts.
 
-Alerts run independently from top-bar presentation.
+Alerts are transition-based. A rule becomes active once, remains active while its condition is true, and resolves when the condition is no longer true.
+
+Optional reminders may repeat while an alert remains active.
 
 ## Alert acknowledgment
 
-When any monitored field on a target triggers an unacknowledged alert, that target's single top-bar item shows an alert badge.
+When a monitored field triggers an unacknowledged alert, the target's top-bar item shows an alert badge.
 
-Clicking the target top-bar item:
+Opening the target report acknowledges unread alerts and clears the badge.
 
-- opens or focuses the target report
-- acknowledges unread alerts
-- clears the top-bar badge
+Acknowledgment does not resolve the condition. An acknowledged alert remains active and visible until its condition resolves.
 
-Acknowledgment does not resolve an active condition.
+If the condition triggers again after resolving, it becomes a new alert event.
 
-An active acknowledged alert remains visible in the report until its underlying condition resolves.
+## Native notifications
 
-## Targets view
+Target Monitor v0.7.0 can request native Windows notifications through RemoteHand's generic plugin notification capability.
 
-The current ping-centric Targets view will evolve to summarize:
+Per target, the user may independently choose:
 
-- target identity
+- Show this target in system tray
+- Show alert notifications
+
+Native notifications are silent so Target Monitor's existing MP3/WAV or fallback-beep audio remains in control.
+
+Multiple notifications for the same target are queued by RemoteHand rather than blindly overwriting each other.
+
+Clicking a Target Monitor notification:
+
+- restores RemoteHand
+- opens or focuses Target Monitor
+- selects the originating target
+- opens that target's Report
+
+## Target reports
+
+Each target has a report containing:
+
 - overall state
-- Ping status
-- TCP status
-- HTTP/HTTPS status
-- target actions
+- current Ping state and value
+- retained Ping history
+- TCP check results
+- HTTP / HTTPS check results
+- extracted HTTP fields
+- configured and active alerts
 
-The current Ping-only lower dashboard will be removed from the main Targets screen during the v1.0.0 redesign.
+HTTP field tables support search, filtering, and pagination.
 
-Its underlying Ping history functionality is retained for possible use in a richer target detail/report view.
+## Monitoring settings
 
-## Network Identity
+Sampling intervals are independently configurable for:
 
-The inherited Network Identity functionality remains part of the current foundation:
+- Ping
+- TCP
+- HTTP / HTTPS
 
-- public IP display
-- local interface discovery
-- MAC / IPv4 / IPv6 information
-- copy actions
-- optional top-bar Network Identity contribution
+History settings include:
 
-Its long-term placement may be revisited as Target Monitor evolves.
+- retained monitoring history
+- top-bar history window
+
+The current defaults are:
+
+- Ping: 2 seconds
+- TCP: 5 seconds
+- HTTP: 10 seconds
+- retained history: 1 hour
+- top-bar history: 1 minute
 
 ## Architecture
 
@@ -196,7 +284,7 @@ RemoteHand owns generic infrastructure.
 
 Target Monitor owns monitoring semantics.
 
-RemoteHand core provides generic facilities such as:
+RemoteHand provides generic facilities such as:
 
 - executable plugin runtime
 - network access
@@ -204,17 +292,21 @@ RemoteHand core provides generic facilities such as:
 - plugin-scoped storage
 - clipboard integration
 - tray contributions
+- native plugin notification delivery
 - top-bar contribution primitives
-- panel hosting
+- panel hosting and navigation
 
 Target Monitor owns:
 
 - Ping behavior
 - TCP service monitoring
-- HTTP/HTTPS request monitoring
+- HTTP/HTTPS monitoring
 - response extraction
-- alert rules
-- target state
+- source formatting
+- graph thresholds
+- alert rules and state
+- alert sounds/reminders
+- target reports
 - monitoring presentation
 
 Device-specific monitoring logic should not be added to RemoteHand core.
@@ -235,7 +327,7 @@ An endpoint such as `/api/system/info` may expose fields including:
 - `miningPaused`
 - `overheat_mode`
 
-Target Monitor should not hard-code a Bitaxe-specific dashboard. These values are simply an example of generic JSON fields that the user may display, graph, or attach alerts to.
+Target Monitor does not hard-code a Bitaxe dashboard. These values are simply generic JSON fields that may be displayed, graphed, formatted, or assigned alerts.
 
 ## Build
 
@@ -244,9 +336,23 @@ Prerequisites:
 - Rust stable toolchain
 - On Linux, unprivileged ICMP availability depends on host ICMP socket policy
 
-Build:
+Validate:
+
+    cargo test
+
+Build release runtime:
 
     cargo build --release
+
+Windows installable package:
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+
+The clean Windows package is created at:
+
+    dist\remotehand-target-monitor-windows-x86_64
+
+Install that package directory from RemoteHand, not the repository root.
 
 ## Plugin identity
 
@@ -262,17 +368,30 @@ Panel ID:
 
     target-monitor
 
-Current development version:
+Current release version:
 
-    1.0.0
+    0.7.0
 
 ## Lineage
 
 Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase.
 
-Host Monitor remains frozen in its original repository as the historical pre-1.0 product line.
+Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor is the successor product beginning with v1.0.0.
+Target Monitor continues that product line as **v0.7.0**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+
+## Future alert delivery
+
+Target Monitor v0.7.0 currently supports alert sound/reminders and native Windows notifications.
+
+Future versions may add additional alert-delivery sinks such as:
+
+- email
+- webhook
+- file / alert log output
+- other integrations where justified
+
+The intended architecture is to keep alert detection separate from alert delivery so new sinks can be added without changing monitoring semantics.
 
 ## Product boundary
 
@@ -280,16 +399,20 @@ Target Monitor should remain compact, generic, and user-controlled.
 
 The goal is not to become a full enterprise monitoring platform.
 
-The v1.0.0 focus is:
+The v0.7.0 release focuses on:
 
 - proven Ping monitoring
-- TCP service reachability
-- HTTP/HTTPS monitoring
-- JSON, plain-text, and regex extraction
+- TCP reachability
+- HTTP / HTTPS monitoring
+- JSON, text, and regex extraction
+- configurable monitoring/history
 - one top-bar item per target
-- reusable background alerts
+- reusable alerts and reminders
+- native notifications
 - clear acknowledgment and resolution behavior
+- target-level reports
+- configurable visual presentation
 
 ## License
 
-See the project license when added to this repository. Third-party components retain their own licenses.
+Third-party components retain their own licenses.
