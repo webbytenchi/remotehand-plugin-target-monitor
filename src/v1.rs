@@ -244,6 +244,15 @@ impl Default for TopbarConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SourceFormat {
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
+    suffix: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GraphThreshold {
@@ -297,6 +306,8 @@ struct MonitorTarget {
     border_color: String,
     #[serde(default)]
     graph_thresholds: BTreeMap<String, GraphThresholdConfig>,
+    #[serde(default)]
+    source_formats: BTreeMap<String, SourceFormat>,
 }
 impl MonitorTarget {
     fn graph_color_for_state(&self, state: &str) -> &str {
@@ -623,7 +634,7 @@ fn default_target() -> MonitorTarget {
         graph_high_color: default_graph_high_color(), graph_critical_color: default_graph_critical_color(),
         graph_offline_color: default_graph_offline_color(), target_name_color: default_target_name_color(),
         latency_color: default_latency_color(), background_color: default_background_color(),
-        border_color: default_border_color(), graph_thresholds: BTreeMap::new(),
+        border_color: default_border_color(), graph_thresholds: BTreeMap::new(), source_formats: BTreeMap::new(),
     }
 }
 fn default_config() -> StoredConfig {
@@ -695,6 +706,12 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
             for threshold in [&thresholds.warning, &thresholds.critical].into_iter().flatten() {
                 if !matches!(threshold.operator.as_str(), ">="|"<="|">"|"<"|"=") { return Err(format!("unsupported graph threshold operator: {}", threshold.operator)); }
                 if !threshold.value.is_finite() { return Err("graph threshold values must be finite numbers".into()); }
+            }
+        }
+        for (source, format) in &target.source_formats {
+            if source.trim().is_empty() { return Err("source format source cannot be empty".into()); }
+            if format.prefix.chars().count() > 24 || format.suffix.chars().count() > 24 {
+                return Err("source format prefix/suffix must be 24 characters or less".into());
             }
         }
         if target.tcp_checks.len() > 32 || target.http_checks.len() > 32 { return Err("maximum 32 TCP and 32 HTTP checks per target".into()); }
@@ -911,6 +928,61 @@ fn source_value(monitor:&TargetMonitor,source:&str)->Value{
 fn display_value(v:&Value)->String{
     match v {Value::Null=>"—".into(),Value::Bool(b)=>if *b{"Yes".into()}else{"No".into()},Value::Number(n)=>n.as_f64().map(|f|if f.abs()>=100.0{format!("{f:.0}")}else{format!("{f:.1}")}).unwrap_or_else(||n.to_string()),Value::String(s)=>s.chars().take(22).collect(),_=>v.to_string()}
 }
+fn builtin_source_format(source:&str)->SourceFormat{
+    if source=="ping.latency" || (source.starts_with("tcp:") && source.ends_with(".latency")) || (source.starts_with("http:") && source.ends_with(".responseTime")) {
+        return SourceFormat{prefix:String::new(),suffix:" ms".into()};
+    }
+    SourceFormat::default()
+}
+fn source_format(monitor:&TargetMonitor,source:&str)->SourceFormat{
+    monitor.target.source_formats.get(source).cloned().unwrap_or_else(||builtin_source_format(source))
+}
+fn formatted_source_value(monitor:&TargetMonitor,source:&str,unavailable_word:bool)->String{
+    let raw=source_value(monitor,source);
+    if raw.is_null(){return if unavailable_word{"Unavailable".into()}else{"—".into()};}
+    let base=display_value(&raw);
+    let format=source_format(monitor,source);
+    format!("{}{}{}",format.prefix,base,format.suffix)
+}
+fn source_label(monitor:&TargetMonitor,source:&str)->String{
+    if source=="none"||source.is_empty(){return "None".into();}
+    if source=="target.name"{return "Target name".into();}
+    if source=="ping.latency"{return "Ping latency".into();}
+    if let Some(rest)=source.strip_prefix("tcp:"){
+        if let Some((id,field))=rest.split_once('.'){
+            if let Some(check)=monitor.target.tcp_checks.iter().find(|c|c.id==id){
+                return match field{
+                    "reachable"=>format!("{} · Reachable",check.name),
+                    "latency"=>format!("{} · Connection time",check.name),
+                    _=>format!("{} · {}",check.name,field),
+                };
+            }
+        }
+    }
+    if let Some(rest)=source.strip_prefix("http:"){
+        if let Some((id,field))=rest.split_once('.'){
+            if let Some(check)=monitor.target.http_checks.iter().find(|c|c.id==id){
+                return match field{
+                    "responseTime"=>format!("{} · Response time",check.name),
+                    "status"=>format!("{} · Status code",check.name),
+                    "response"=>format!("{} · Whole response",check.name),
+                    _=>format!("{} · {}",check.name,field),
+                };
+            }
+        }
+    }
+    source.to_string()
+}
+fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->String{
+    let mut parts=vec![format!("{} · {}",monitor.target.name,monitor.overall_state())];
+    if value_source!="none"{
+        parts.push(format!("Value: {} = {}",source_label(monitor,value_source),formatted_source_value(monitor,value_source,true)));
+    }
+    if graph_source!="none"{
+        parts.push(format!("Graph: {} · last {}",source_label(monitor,graph_source),formatted_source_value(monitor,graph_source,true)));
+    }
+    parts.join(" | ")
+}
 fn topbar_tone(state:&str)->&'static str{match state{"OFFLINE"=>"danger","DEGRADED"=>"warning","ONLINE"=>"accent",_=>"muted"}}
 fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value>{
     let cutoff=now_ms().saturating_sub(history_seconds.saturating_mul(1000));
@@ -932,7 +1004,7 @@ fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
         let title=display_value(&source_value(m,&m.target.topbar.title_source));
-        let value=display_value(&source_value(m,&m.target.topbar.value_source));
+        let value=formatted_source_value(m,&m.target.topbar.value_source,false);
         let series=graph_series_for(m,&m.target.topbar.graph_source,store.config.monitoring.topbar_history_seconds);
         let mut children=vec![];
         if m.target.topbar.title_source!="none"{children.push(json!({"type":"text","label":title,"tone":"muted","color":m.target.target_name_color,"fontSize":9}));}
@@ -940,7 +1012,7 @@ fn topbar_value(store:&MonitorStore)->Value{
         if m.target.topbar.graph_source!="none"{children.push(json!({"type":"sparkline","tone":topbar_tone(m.overall_state()),"series":series}));}
         let unread=m.unread_alerts();
         if unread>0{children.push(json!({"type":"badge","label":unread.to_string(),"tone":"warning","fontSize":9}));}
-        json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
+        json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,&m.target.topbar.graph_source),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
     }).collect::<Vec<_>>();
     json!({"items":items})
 }
@@ -948,7 +1020,7 @@ fn tray_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.show_in_system_tray).map(|m|{
         let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
         let series=graph_series_for(m,source,store.config.monitoring.topbar_history_seconds);
-        json!({"id":m.target.id,"title":m.target.name,"tooltip":format!("{} · {}",m.target.name,m.overall_state()),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
+        json!({"id":m.target.id,"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,source),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
     json!({"items":items})
 }
@@ -1112,6 +1184,21 @@ mod tests {
     #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
     #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
+    #[test] fn source_formatting_applies_to_display_without_changing_raw_value(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.source_formats.insert("metric.temp".into(),SourceFormat{prefix:"".into(),suffix:" °C".into()});
+        m.metric_history.insert("metric.temp".into(),vec![MetricRecord{timestamp:now_ms(),value:65.0}]);
+        assert_eq!(m.metric_history["metric.temp"][0].value,65.0);
+        assert_eq!(source_format(m,"metric.temp").suffix," °C");
+    }
+    #[test] fn builtin_timing_sources_default_to_ms(){
+        let s=MonitorStore::new();
+        let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();
+        assert_eq!(source_format(m,"ping.latency").suffix," ms");
+        assert_eq!(builtin_source_format("tcp:ssh.latency").suffix," ms");
+        assert_eq!(builtin_source_format("http:api.responseTime").suffix," ms");
+    }
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
     #[test] fn generic_graph_thresholds_color_numeric_series(){
