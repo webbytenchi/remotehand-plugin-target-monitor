@@ -12,7 +12,6 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
-const LEGACY_SAMPLE_INTERVAL_SECONDS: u64 = 2;
 const DEFAULT_PING_INTERVAL_SECONDS: u64 = 2;
 const DEFAULT_TCP_INTERVAL_SECONDS: u64 = 5;
 const DEFAULT_HTTP_INTERVAL_SECONDS: u64 = 10;
@@ -319,15 +318,7 @@ impl MonitoringSettings {
     }
 }
 impl Default for MonitoringSettings {
-    fn default() -> Self {
-        Self {
-            ping_interval_seconds: LEGACY_SAMPLE_INTERVAL_SECONDS,
-            tcp_interval_seconds: LEGACY_SAMPLE_INTERVAL_SECONDS,
-            http_interval_seconds: LEGACY_SAMPLE_INTERVAL_SECONDS,
-            history_retention_seconds: DEFAULT_HISTORY_RETENTION_SECONDS,
-            topbar_history_seconds: DEFAULT_TOPBAR_HISTORY_SECONDS,
-        }
-    }
+    fn default() -> Self { Self::new_defaults() }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1058,7 +1049,7 @@ mod tests {
     #[test] fn time_window_excludes_old_topbar_points(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.metric_history.insert("x".into(),vec![MetricRecord{timestamp:now-120000,value:1.0},MetricRecord{timestamp:now,value:2.0}]);let series=graph_series_for(m,"x",60);assert_eq!(series.len(),1);assert_eq!(series[0]["value"],json!(2.0));}
     #[test] fn config_rejects_invalid_monitoring_windows(){let mut c=default_config();c.monitoring.http_interval_seconds=0;assert!(validate_config(&c).is_err());c=default_config();c.monitoring.topbar_history_seconds=5;assert!(validate_config(&c).is_err());}
     #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
-    #[test] fn legacy_config_monitoring_defaults_preserve_two_second_cadence(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,2);assert_eq!(c.monitoring.http_interval_seconds,2);}
+    #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
     #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
