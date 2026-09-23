@@ -1059,6 +1059,35 @@ mod tests {
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
+    #[test] fn target_appearance_flows_to_topbar_and_tray(){
+        let mut s=MonitorStore::new();
+        {
+            let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+            m.target.show_in_system_tray=true;
+            m.target.graph_normal_color="#aa33cc".into();
+            m.target.graph_high_color="#cc9933".into();
+            m.target.graph_offline_color="#dd3344".into();
+            m.target.target_name_color="#abcdef".into();
+            m.target.latency_color="#fedcba".into();
+            m.target.background_color="#112233".into();
+            m.target.border_color="#445566".into();
+            m.last_state="NORMAL".into();
+            m.pending_state="NORMAL".into();
+            m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}),3600);
+        }
+        let topbar=topbar_value(&s);
+        let item=&topbar["items"][0];
+        assert_eq!(item["content"]["backgroundColor"],"#112233");
+        assert_eq!(item["content"]["borderColor"],"#445566");
+        assert_eq!(item["content"]["children"][0]["color"],"#abcdef");
+        assert_eq!(item["content"]["children"][1]["color"],"#fedcba");
+        assert_eq!(item["content"]["children"][2]["series"][0]["color"],"#aa33cc");
+        let tray=tray_value(&s);
+        let tray_item=&tray["items"][0];
+        assert_eq!(tray_item["backgroundColor"],"#112233");
+        assert_eq!(tray_item["borderColor"],"#445566");
+        assert_eq!(tray_item["series"][0]["color"],"#aa33cc");
+    }
     #[test] fn ping_tracks_last_reachable_and_offline_since(){let mut m=TargetMonitor::new(default_target());m.last_state="NORMAL".into();m.pending_state="NORMAL".into();m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}),3600);let reachable=m.last_reachable_at;assert!(reachable.is_some());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert!(m.offline_since.is_none());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert_eq!(m.last_state,"OFFLINE");assert!(m.offline_since.is_some());assert_eq!(m.last_reachable_at,reachable);m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}),3600);m.record_ping(&json!({"state":"NORMAL","latencyMs":11.0,"packetLossPercent":0.0}),3600);assert_eq!(m.last_state,"NORMAL");assert!(m.offline_since.is_none());assert!(m.last_reachable_at.unwrap()>=reachable.unwrap());}
     #[test] fn replace_config_prunes_removed_tcp_results(){let mut s=MonitorStore::new();let mut c=s.config.clone();c.targets[0].tcp_checks=vec![TcpCheck{id:"keep".into(),name:"Keep".into(),port:80,enabled:true,alert_rule_ids:vec![]},TcpCheck{id:"drop".into(),name:"Drop".into(),port:22,enabled:true,alert_rule_ids:vec![]}];s.replace_config(c.clone());let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.tcp_results.insert("keep".into(),TcpResult{id:"keep".into(),name:"Keep".into(),port:80,reachable:true,latency_ms:Some(1.0),error:None,timestamp:1});m.tcp_results.insert("drop".into(),TcpResult{id:"drop".into(),name:"Drop".into(),port:22,reachable:false,latency_ms:None,error:None,timestamp:1});c.targets[0].tcp_checks.retain(|x|x.id=="keep");s.replace_config(c);let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();assert_eq!(m.tcp_results.len(),1);assert!(m.tcp_results.contains_key("keep"));assert!(!m.tcp_results.contains_key("drop"));}
     #[test] fn ping_graph_series_keeps_offline_samples_and_sample_colors(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.samples=vec![SampleRecord{timestamp:now-2000,latency_ms:Some(12.0),packet_loss_percent:0.0,state:"NORMAL".into()},SampleRecord{timestamp:now-1000,latency_ms:Some(250.0),packet_loss_percent:0.0,state:"HIGH LATENCY".into()},SampleRecord{timestamp:now,latency_ms:None,packet_loss_percent:100.0,state:"OFFLINE".into()}];let series=graph_series_for(m,"ping.latency",60);assert_eq!(series.len(),3);assert_eq!(series[0]["color"],json!(m.target.graph_normal_color));assert_eq!(series[1]["color"],json!(m.target.graph_high_color));assert_eq!(series[2]["color"],json!(m.target.graph_offline_color));assert!(series[2]["value"].is_null());}
