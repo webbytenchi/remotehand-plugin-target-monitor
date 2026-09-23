@@ -822,9 +822,24 @@ fn main()->Result<(),String>{
             thread::sleep(SAMPLE_INTERVAL);
             let target_ids=match sampler_store.lock(){Ok(s)=>s.targets.values().filter(|m|m.target.enabled).map(|m|m.target.id.clone()).collect::<Vec<_>>(),Err(_)=>return};
             for id in target_ids {
+                let snapshot={
+                    let guard=match sampler_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let Some(monitor)=guard.targets.get(&id) else {continue};
+                    (monitor.clone(),guard.config.alert_rules.clone(),guard.config.alerts.clone())
+                };
+                let (mut sampled,rules,legacy)=snapshot;
+                sample_target(&sampler_output,&mut sampled,&rules,&legacy);
                 let mut guard=match sampler_store.lock(){Ok(g)=>g,Err(_)=>return};
-                let rules=guard.config.alert_rules.clone(); let legacy=guard.config.alerts.clone();
-                if let Some(monitor)=guard.targets.get_mut(&id){sample_target(&sampler_output,monitor,&rules,&legacy);let summary=monitor.summary();let _=send_outbound(&sampler_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload:summary});}
+                let mut summary=None;
+                if let Some(current)=guard.targets.get_mut(&id){
+                    if current.target==sampled.target{
+                        *current=sampled;
+                        summary=Some(current.summary());
+                    }
+                }
+                if let Some(payload)=summary{
+                    let _=send_outbound(&sampler_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});
+                }
                 if emit_surfaces(&sampler_output,&guard).is_err(){return;}
             }
         });
