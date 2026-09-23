@@ -281,6 +281,8 @@ struct MonitorTarget {
     #[serde(default)]
     show_in_system_tray: bool,
     #[serde(default)]
+    show_alert_notifications: bool,
+    #[serde(default)]
     tcp_checks: Vec<TcpCheck>,
     #[serde(default)]
     http_checks: Vec<HttpCheck>,
@@ -629,7 +631,7 @@ impl MonitorStore {
 fn default_target() -> MonitorTarget {
     MonitorTarget {
         id: DEFAULT_TARGET_ID.into(), name: DEFAULT_TARGET_NAME.into(), address: DEFAULT_TARGET.into(),
-        enabled: true, ping_enabled: true, show_in_system_tray: false, tcp_checks: vec![], http_checks: vec![],
+        enabled: true, ping_enabled: true, show_in_system_tray: false, show_alert_notifications: false, tcp_checks: vec![], http_checks: vec![],
         topbar: TopbarConfig::default(), graph_color: None, graph_normal_color: default_graph_normal_color(),
         graph_high_color: default_graph_high_color(), graph_critical_color: default_graph_critical_color(),
         graph_offline_color: default_graph_offline_color(), target_name_color: default_target_name_color(),
@@ -862,12 +864,14 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&
             monitor.active_alerts.insert(key.clone(),alert.clone());
             monitor.last_generic_alert_at.insert(key.clone(),now);
             let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+            emit_rule_notification(output,monitor,rule,source,&current,false);
         } else if matches {
             let should_remind=rule.reminders_enabled && monitor.last_generic_alert_at.get(&key).map(|last|now.saturating_sub(*last)>=rule.reminder_interval_seconds.saturating_mul(1000)).unwrap_or(true);
             if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();if should_remind{alert.acknowledged=false;}}
             if should_remind {
                 monitor.last_generic_alert_at.insert(key.clone(),now);
                 let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+                emit_rule_notification(output,monitor,rule,source,&current,true);
             }
         } else {
             monitor.active_alerts.remove(&key);
@@ -901,6 +905,7 @@ fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&L
     monitor.last_legacy_alert_at.insert(kind.to_string(),now);
     let target=&monitor.target;
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"reminder":reminder,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+    emit_legacy_notification(output,monitor,kind,reminder);
 }
 
 fn source_value(monitor:&TargetMonitor,source:&str)->Value{
@@ -973,6 +978,59 @@ fn source_label(monitor:&TargetMonitor,source:&str)->String{
     }
     source.to_string()
 }
+fn formatted_value_for_source(monitor:&TargetMonitor,source:&str,value:&Value,unavailable_word:bool)->String{
+    if value.is_null(){return if unavailable_word{"Unavailable".into()}else{"—".into()};}
+    let base=display_value(value);
+    let format=source_format(monitor,source);
+    format!("{}{}{}",format.prefix,base,format.suffix)
+}
+fn bounded_notification_text(value:&str,limit:usize)->String{
+    value.chars().take(limit).collect()
+}
+fn emit_native_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,title:String,body:String,tone:&str){
+    if !monitor.target.show_alert_notifications{return;}
+    let _=send_outbound(output,PluginEvent{
+        message_type:"plugin.event",
+        event:"notification.show",
+        payload:json!({
+            "itemId":monitor.target.id,
+            "title":bounded_notification_text(&title,63),
+            "body":bounded_notification_text(&body,255),
+            "tone":tone,
+            "silent":true
+        })
+    });
+}
+fn emit_rule_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,rule:&GenericAlertRule,source:&str,current:&Value,reminder:bool){
+    let title=if reminder{
+        format!("{} · {} · Reminder",monitor.target.name,rule.name)
+    }else{
+        format!("{} · {}",monitor.target.name,rule.name)
+    };
+    let body=format!("{}\nCurrent: {}",source_label(monitor,source),formatted_value_for_source(monitor,source,current,true));
+    emit_native_notification(output,monitor,title,body,"warning");
+}
+fn emit_legacy_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,kind:&str,reminder:bool){
+    let (label,tone,body)=match kind{
+        "highLatency"=>(
+            if reminder{"High latency · Reminder"}else{"High latency"},
+            "warning",
+            format!("Ping latency: {}",formatted_source_value(monitor,"ping.latency",true))
+        ),
+        "offline"=>(
+            if reminder{"Offline · Reminder"}else{"Offline"},
+            "danger",
+            "Ping is unavailable".to_string()
+        ),
+        "recovery"=>(
+            "Recovered",
+            "success",
+            format!("Ping latency: {}",formatted_source_value(monitor,"ping.latency",true))
+        ),
+        _=>return
+    };
+    emit_native_notification(output,monitor,format!("{} · {}",monitor.target.name,label),body,tone);
+}
 fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->String{
     let mut parts=vec![format!("{} · {}",monitor.target.name,monitor.overall_state())];
     if value_source!="none"{
@@ -1017,10 +1075,10 @@ fn topbar_value(store:&MonitorStore)->Value{
     json!({"items":items})
 }
 fn tray_value(store:&MonitorStore)->Value{
-    let items=store.targets.values().filter(|m|m.target.show_in_system_tray).map(|m|{
+    let items=store.targets.values().filter(|m|m.target.show_in_system_tray||m.target.show_alert_notifications).map(|m|{
         let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
         let series=graph_series_for(m,source,store.config.monitoring.topbar_history_seconds);
-        json!({"id":m.target.id,"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,source),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
+        json!({"id":m.target.id,"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,source),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled&&m.target.show_in_system_tray,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
     json!({"items":items})
 }
@@ -1203,6 +1261,23 @@ mod tests {
         let tooltip=topbar["items"][0]["tooltip"].as_str().unwrap();
         assert!(tooltip.contains("Value: Ping latency = 12.0 ms"));
         assert!(tooltip.contains("Graph: Ping latency · last 12.0 ms"));
+    }
+    #[test] fn notification_enabled_target_keeps_hidden_tray_handle(){
+        let mut s=MonitorStore::new();
+        {
+            let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+            m.target.show_in_system_tray=false;
+            m.target.show_alert_notifications=true;
+        }
+        let tray=tray_value(&s);
+        assert_eq!(tray["items"].as_array().unwrap().len(),1);
+        assert_eq!(tray["items"][0]["visible"],json!(false));
+    }
+    #[test] fn notification_text_uses_source_formatting(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.source_formats.insert("metric.temp".into(),SourceFormat{prefix:"".into(),suffix:" °C".into()});
+        assert_eq!(formatted_value_for_source(m,"metric.temp",&json!(65.0),true),"65.0 °C");
     }
     #[test] fn builtin_timing_sources_default_to_ms(){
         let s=MonitorStore::new();
