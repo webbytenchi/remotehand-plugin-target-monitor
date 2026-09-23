@@ -31,6 +31,7 @@ const DEFAULT_GRAPH_CRITICAL_COLOR: &str = "#efaaaa";
 const DEFAULT_GRAPH_OFFLINE_COLOR: &str = "#8f9baa";
 const DEFAULT_TARGET_NAME_COLOR: &str = "#a8b4c2";
 const DEFAULT_LATENCY_COLOR: &str = "#dce4ee";
+const DEFAULT_VALUE_ALERT_COLOR: &str = "#efaaaa";
 const DEFAULT_BACKGROUND_COLOR: &str = "#16263a";
 const DEFAULT_BORDER_COLOR: &str = "#3b5f8d";
 
@@ -44,6 +45,7 @@ fn default_graph_critical_color() -> String { DEFAULT_GRAPH_CRITICAL_COLOR.to_st
 fn default_graph_offline_color() -> String { DEFAULT_GRAPH_OFFLINE_COLOR.to_string() }
 fn default_target_name_color() -> String { DEFAULT_TARGET_NAME_COLOR.to_string() }
 fn default_latency_color() -> String { DEFAULT_LATENCY_COLOR.to_string() }
+fn default_value_alert_color() -> String { DEFAULT_VALUE_ALERT_COLOR.to_string() }
 fn default_background_color() -> String { DEFAULT_BACKGROUND_COLOR.to_string() }
 fn default_border_color() -> String { DEFAULT_BORDER_COLOR.to_string() }
 fn default_network_identity_topbar_source() -> String { "public".to_string() }
@@ -302,6 +304,8 @@ struct MonitorTarget {
     target_name_color: String,
     #[serde(default = "default_latency_color")]
     latency_color: String,
+    #[serde(default = "default_value_alert_color")]
+    value_alert_color: String,
     #[serde(default = "default_background_color")]
     background_color: String,
     #[serde(default = "default_border_color")]
@@ -635,7 +639,7 @@ fn default_target() -> MonitorTarget {
         topbar: TopbarConfig::default(), graph_color: None, graph_normal_color: default_graph_normal_color(),
         graph_high_color: default_graph_high_color(), graph_critical_color: default_graph_critical_color(),
         graph_offline_color: default_graph_offline_color(), target_name_color: default_target_name_color(),
-        latency_color: default_latency_color(), background_color: default_background_color(),
+        latency_color: default_latency_color(), value_alert_color: default_value_alert_color(), background_color: default_background_color(),
         border_color: default_border_color(), graph_thresholds: BTreeMap::new(), source_formats: BTreeMap::new(),
     }
 }
@@ -700,7 +704,7 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
         if target.id.trim().is_empty() || !target_ids.insert(target.id.clone()) { return Err("target ids must be unique and non-empty".into()); }
         if target.name.trim().is_empty() || target.name.len() > 128 { return Err("target name is missing or too long".into()); }
         resolve_target(&target.address)?;
-        for color in [&target.graph_normal_color,&target.graph_high_color,&target.graph_critical_color,&target.graph_offline_color,&target.target_name_color,&target.latency_color,&target.background_color,&target.border_color] {
+        for color in [&target.graph_normal_color,&target.graph_high_color,&target.graph_critical_color,&target.graph_offline_color,&target.target_name_color,&target.latency_color,&target.value_alert_color,&target.background_color,&target.border_color] {
             if !valid_hex_color(color) { return Err("target colors must use #RRGGBB".into()); }
         }
         for (source, thresholds) in &target.graph_thresholds {
@@ -1067,6 +1071,16 @@ fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value
     }
     series
 }
+fn topbar_value_source_is_alerting(m:&TargetMonitor,source:&str)->bool{
+    if source=="none" || source.is_empty(){return false;}
+    if source=="ping.latency"{
+        return matches!(m.last_state.as_str(),"HIGH LATENCY"|"OFFLINE");
+    }
+    m.active_alerts.values().any(|alert|alert.source==source)
+}
+fn topbar_value_color<'a>(m:&'a TargetMonitor,source:&str)->&'a str{
+    if topbar_value_source_is_alerting(m,source){&m.target.value_alert_color}else{&m.target.latency_color}
+}
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
         let title=display_value(&source_value(m,&m.target.topbar.title_source));
@@ -1074,7 +1088,7 @@ fn topbar_value(store:&MonitorStore)->Value{
         let series=graph_series_for(m,&m.target.topbar.graph_source,store.config.monitoring.topbar_history_seconds);
         let mut children=vec![];
         if m.target.topbar.title_source!="none"{children.push(json!({"type":"text","label":title,"tone":"muted","color":m.target.target_name_color,"fontSize":9}));}
-        if m.target.topbar.value_source!="none"{children.push(json!({"type":"metric","value":value,"tone":topbar_tone(m.overall_state()),"color":m.target.latency_color,"fontSize":14}));}
+        if m.target.topbar.value_source!="none"{children.push(json!({"type":"metric","value":value,"tone":topbar_tone(m.overall_state()),"color":topbar_value_color(m,&m.target.topbar.value_source),"fontSize":14}));}
         if m.target.topbar.graph_source!="none"{children.push(json!({"type":"sparkline","tone":topbar_tone(m.overall_state()),"series":series}));}
         let unread=m.unread_alerts();
         if unread>0{children.push(json!({"type":"badge","label":unread.to_string(),"tone":"warning","fontSize":9}));}
@@ -1257,6 +1271,35 @@ mod tests {
         m.metric_history.insert("metric.temp".into(),vec![MetricRecord{timestamp:now_ms(),value:65.0}]);
         assert_eq!(m.metric_history["metric.temp"][0].value,65.0);
         assert_eq!(source_format(m,"metric.temp").suffix," °C");
+    }
+    #[test] fn topbar_value_uses_alert_color_only_for_its_selected_source(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.topbar.value_source="metric.temp".into();
+        m.target.latency_color="#112233".into();
+        m.target.value_alert_color="#ff0000".into();
+        m.active_alerts.insert("other:rule".into(),ActiveAlert{
+            key:"other:rule".into(),target_id:m.target.id.clone(),rule_id:"rule".into(),rule_name:"Other".into(),
+            source:"metric.fan".into(),current_value:json!(1),since:now_ms(),acknowledged:false,
+        });
+        assert_eq!(topbar_value_color(m,"metric.temp"),"#112233");
+        m.active_alerts.insert("temp:rule".into(),ActiveAlert{
+            key:"temp:rule".into(),target_id:m.target.id.clone(),rule_id:"rule".into(),rule_name:"Temp".into(),
+            source:"metric.temp".into(),current_value:json!(70),since:now_ms(),acknowledged:true,
+        });
+        assert_eq!(topbar_value_color(m,"metric.temp"),"#ff0000");
+    }
+    #[test] fn ping_value_alert_color_follows_ping_state(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.latency_color="#112233".into();
+        m.target.value_alert_color="#ff0000".into();
+        m.last_state="NORMAL".into();
+        assert_eq!(topbar_value_color(m,"ping.latency"),"#112233");
+        m.last_state="HIGH LATENCY".into();
+        assert_eq!(topbar_value_color(m,"ping.latency"),"#ff0000");
+        m.last_state="OFFLINE".into();
+        assert_eq!(topbar_value_color(m,"ping.latency"),"#ff0000");
     }
     #[test] fn topbar_and_tooltip_use_formatted_source_values(){
         let mut s=MonitorStore::new();
