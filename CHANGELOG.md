@@ -4,6 +4,30 @@ All notable changes to RemoteHand Target Monitor will be documented in this file
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 1.0.0 - Development candidate
+
+### Added
+
+- Multi-check target model with ICMP/Ping, TCP services, and HTTP/HTTPS requests.
+- TCP presets for HTTP, HTTPS, SSH, RDP, SMB, DNS, SMTP, IMAP, POP3, MySQL, and PostgreSQL, plus custom ports.
+- HTTP status, response-time, content-type, raw-body, JSON field discovery, plain-text monitoring, and named-capture regex extraction.
+- Reusable named alert rules with numeric thresholds, equality, and change detection.
+- Active/unacknowledged, active/acknowledged, and resolved alert lifecycle.
+- One configurable top-bar contribution per target with independent Title, Value, and Graph sources.
+- Target report view covering Ping history, TCP results, HTTP fields, and active alerts.
+- Redesigned Targets, Alerts, and Settings navigation.
+
+### Preserved
+
+- Real ICMP/Ping sampling and two-sample state confirmation.
+- Existing Ping transition alerts, sounds, cooldowns, reminders, and per-target tray contributions.
+- Plugin-scoped configuration persistence and existing target color settings.
+
+### Development status
+
+- Implemented on `feature/v1.0.0-target-monitor`.
+- Not merged, tagged, or released yet; local RemoteHand acceptance is required first.
+
 ## 0.6.1 - Initial Target Monitor baseline
 
 Target Monitor begins as a clean successor repository to RemoteHand Host Monitor.
