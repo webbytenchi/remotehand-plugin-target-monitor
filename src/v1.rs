@@ -981,7 +981,7 @@ fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->
     if graph_source!="none"{
         parts.push(format!("Graph: {} · last {}",source_label(monitor,graph_source),formatted_source_value(monitor,graph_source,true)));
     }
-    parts.join(" | ").chars().take(240).collect()
+    parts.join("\n").chars().take(240).collect()
 }
 fn topbar_tone(state:&str)->&'static str{match state{"OFFLINE"=>"danger","DEGRADED"=>"warning","ONLINE"=>"accent",_=>"muted"}}
 fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value>{
