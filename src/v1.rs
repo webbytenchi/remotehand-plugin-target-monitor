@@ -1247,7 +1247,7 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&MonitorStore)->Result<(),Str
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"topbar.update",payload:topbar_value(store)})?;
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray_value(store)})
 }
-fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules})}
+fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules,"networkIdentity":network_identity_value(&store.network_identity)})}
 
 fn main()->Result<(),String>{
     let plugin_id=std::env::var("REMOTEHAND_PLUGIN_ID").map_err(|_|"REMOTEHAND_PLUGIN_ID is missing".to_string())?;
@@ -1262,6 +1262,25 @@ fn main()->Result<(),String>{
     let store=Arc::new(Mutex::new(MonitorStore::new()));
     let mut host_request_id=1u64;
     ensure_config_loaded(&store,&mut input,&output_tx,&mut host_request_id)?;
+    if let Ok(result)=host_request(&mut input,&output_tx,&mut host_request_id,"network.interfaces",json!({})) {
+        if let Ok(mut guard)=store.lock() {
+            guard.network_identity.interfaces=result.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default();
+        }
+    }
+    {
+        let public_store=Arc::clone(&store);
+        let public_output=output_tx.clone();
+        thread::spawn(move||{
+            let result=lookup_public_ip();
+            if let Ok(mut guard)=public_store.lock() {
+                match result {
+                    Ok(address)=>{guard.network_identity.public_ip=Some(address);guard.network_identity.public_ip_error=None;}
+                    Err(error)=>{guard.network_identity.public_ip=None;guard.network_identity.public_ip_error=Some(error);}
+                }
+                let _=emit_surfaces(&public_output,&guard);
+            }
+        });
+    }
     {
         let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
         send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"monitor.ready",payload:status_value(&guard)})?;
