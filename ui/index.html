@@ -250,7 +250,8 @@ async function testLegacyAlert(k){
     soundPlayed=true;
   }
   if(r.notificationEnabled!==false){
-    const target=(state.config.targets||[]).find(t=>t.showAlertNotifications);
+    const eligibleTargets=(state.config.targets||[]).filter(t=>t.showAlertNotifications);
+    const target=eligibleTargets.length?eligibleTargets[Math.floor(Math.random()*eligibleTargets.length)]:null;
     if(target){
       try{
         const result=await request("monitor.alert.test",{targetId:target.id,kind:k});
