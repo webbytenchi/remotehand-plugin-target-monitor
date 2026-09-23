@@ -131,6 +131,10 @@ struct LegacyAlertRule {
     cooldown_seconds: u64,
     #[serde(default)]
     sound: Option<SoundConfig>,
+    #[serde(default)]
+    reminders_enabled: bool,
+    #[serde(default = "default_reminder_interval")]
+    reminder_interval_seconds: u64,
 }
 fn default_legacy_cooldown() -> u64 { 60 }
 fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule { LegacyAlertRule { enabled: true, cooldown_seconds, sound: None } }
@@ -363,6 +367,7 @@ struct TargetMonitor {
     metric_history: BTreeMap<String, Vec<MetricRecord>>,
     previous_values: BTreeMap<String, Value>,
     active_alerts: BTreeMap<String, ActiveAlert>,
+    last_generic_alert_at: BTreeMap<String, u64>,
     last_legacy_alert_at: BTreeMap<String, u64>,
 }
 impl TargetMonitor {
@@ -378,6 +383,7 @@ impl TargetMonitor {
             metric_history: BTreeMap::new(),
             previous_values: BTreeMap::new(),
             active_alerts: BTreeMap::new(),
+            last_generic_alert_at: BTreeMap::new(),
             last_legacy_alert_at: BTreeMap::new(),
         }
     }
@@ -490,6 +496,9 @@ impl MonitorStore {
                     monitor.metric_history.retain(|source, _| source_is_current(source));
                     monitor.previous_values.retain(|source, _| source_is_current(source));
                     monitor.active_alerts.retain(|_, alert| source_is_current(&alert.source));
+                    monitor.last_generic_alert_at.retain(|key, _| {
+                        key.rsplit_once(':').map(|(source, _)| source_is_current(source)).unwrap_or(true)
+                    });
                     next.insert(target.id.clone(), monitor);
                     continue;
                 }
@@ -539,6 +548,7 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
         if rule.name.trim().is_empty() || rule.name.len() > 128 { return Err("alert rule name is missing or too long".into()); }
         if !matches!(rule.operator.as_str(), ">="|"<="|"="|"equals"|"changed") { return Err(format!("unsupported alert operator: {}", rule.operator)); }
         if rule.operator != "changed" && rule.value.is_none() { return Err(format!("alert rule {} requires a comparison value", rule.name)); }
+        if rule.reminder_interval_seconds < 5 || rule.reminder_interval_seconds > 86400 { return Err(format!("alert rule {} reminder interval must be 5-86400 seconds", rule.name)); }
         if let Some(sound) = &rule.sound { validate_sound(sound)?; sound_total += sound.size_bytes; }
     }
     for legacy in [&config.alerts.high_latency, &config.alerts.offline, &config.alerts.recovery] {
@@ -694,14 +704,22 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&
         let Some(rule)=rules.iter().find(|r|&r.id==rule_id) else {continue};
         let key=format!("{source}:{rule_id}");
         let matches=rule_matches(rule,&current,previous.as_ref());
+        let now=now_ms();
         if matches && !monitor.active_alerts.contains_key(&key) {
-            let alert=ActiveAlert{key:key.clone(),target_id:monitor.target.id.clone(),rule_id:rule.id.clone(),rule_name:rule.name.clone(),source:source.into(),current_value:current.clone(),since:now_ms(),acknowledged:false};
+            let alert=ActiveAlert{key:key.clone(),target_id:monitor.target.id.clone(),rule_id:rule.id.clone(),rule_name:rule.name.clone(),source:source.into(),current_value:current.clone(),since:now,acknowledged:false};
             monitor.active_alerts.insert(key.clone(),alert.clone());
-            let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+            monitor.last_generic_alert_at.insert(key.clone(),now);
+            let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
         } else if matches {
-            if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();}
+            let should_remind=rule.reminders_enabled && monitor.last_generic_alert_at.get(&key).map(|last|now.saturating_sub(*last)>=rule.reminder_interval_seconds.saturating_mul(1000)).unwrap_or(true);
+            if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();if should_remind{alert.acknowledged=false;}}
+            if should_remind {
+                monitor.last_generic_alert_at.insert(key.clone(),now);
+                let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+            }
         } else {
             monitor.active_alerts.remove(&key);
+            monitor.last_generic_alert_at.remove(&key);
         }
     }
     monitor.previous_values.insert(source.into(),current);
@@ -916,8 +934,9 @@ mod tests {
     #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
-    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
-    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound:None};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
+    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
+    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
