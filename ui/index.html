@@ -418,6 +418,43 @@ $("networkIdentityAutoRefresh").onchange=async()=>{state.config.networkIdentityA
 $("networkIdentityRefreshSeconds").onchange=async()=>{state.config.networkIdentityRefreshSeconds=Number($("networkIdentityRefreshSeconds").value);const ok=await persist("Network Identity refresh interval saved.");if(ok)scheduleNetworkIdentityRefresh();renderNetworkIdentity()};
 $("networkIdentityChangeSound").onchange=async()=>{state.config.networkIdentityChangeSound=$("networkIdentityChangeSound").checked;await persist("Network Identity sound setting saved.");renderNetworkIdentity()};
 $("networkIdentityChangeNotification").onchange=async()=>{state.config.networkIdentityChangeNotification=$("networkIdentityChangeNotification").checked;await persist("Network Identity notification setting saved.");renderNetworkIdentity()};
+function historyQueryParams(includePage=true){
+  const from=$("historyFrom").value?new Date($("historyFrom").value).getTime():0;
+  const to=$("historyTo").value?new Date($("historyTo").value).getTime():0;
+  const params={search:$("historySearch").value.trim(),targetId:$("historyTarget").value,eventType:$("historyType").value,source:$("historySource").value,status:$("historyStatus").value,sortBy:historyState.sortBy,sortDir:historyState.sortDir};
+  if(from)params.from=from;if(to)params.to=to;if(includePage){params.page=historyState.page;params.pageSize=historyState.pageSize}return params;
+}
+function historyTime(ms){return ms?new Date(Number(ms)).toLocaleString():"—"}
+function historyDelivery(row){const parts=[];if(row.sound)parts.push('<span class="pill">Sound</span>');if(row.notification)parts.push('<span class="pill">Notification</span>');return parts.join("")||'<span class="muted">None</span>'}
+function renderHistoryRows(rows){
+  $("historyBody").innerHTML=rows?.length?rows.map(row=>`<tr><td>${esc(historyTime(row.timestamp))}</td><td>${esc(row.targetName||"—")}</td><td>${esc(row.eventType||"")}</td><td>${esc(row.source||"")}</td><td><b>${esc(row.name||"")}</b>${row.reminder?'<div class="muted">Reminder</div>':""}</td><td>${esc(row.value||"—")}</td><td>${esc(row.status||"")}</td><td><div class="history-delivery">${historyDelivery(row)}</div></td><td><div class="history-detail">${esc(row.details||"")}</div></td></tr>`).join(""):'<tr><td colspan="9" class="history-empty">No history matches the current filters.</td></tr>';
+}
+function fillHistorySelect(id,items,placeholder,valueKey=""){
+  const select=$(id),current=select.value,options=[`<option value="">${esc(placeholder)}</option>`];
+  for(const item of items||[]){const value=valueKey?item[valueKey]:item,label=valueKey?(item.name||value):item;options.push(`<option value="${esc(value)}">${esc(label)}</option>`)}
+  select.innerHTML=options.join("");select.value=current;
+}
+function renderHistoryFacets(facets){
+  if(!facets)return;historyState.facets=facets;
+  fillHistorySelect("historyTarget",facets.targets,"All targets","id");fillHistorySelect("historyType",facets.eventTypes,"All types");fillHistorySelect("historySource",facets.sources,"All sources");fillHistorySelect("historyStatus",facets.statuses,"All statuses");
+}
+async function loadHistory(force=false){
+  if(historyLoading)return;if(historyLoaded&&!force&&$("historyPanel").classList.contains("active")===false)return;
+  historyLoading=true;$("historyBody").innerHTML='<tr><td colspan="9" class="history-empty">Loading history…</td></tr>';
+  try{
+    const result=await request("monitor.history.query",historyQueryParams(true));historyLoaded=true;historyState.total=Number(result.total||0);historyState.page=Number(result.page||historyState.page);historyState.pageSize=Number(result.pageSize||historyState.pageSize);
+    renderHistoryFacets(result.facets);renderHistoryRows(result.rows||[]);const pages=Math.max(1,Math.ceil(historyState.total/historyState.pageSize));
+    $("historyPageInfo").textContent=`Page ${historyState.page} of ${pages} · ${historyState.total} event${historyState.total===1?"":"s"}`;$("historyPrev").disabled=historyState.page<=1;$("historyNext").disabled=historyState.page>=pages;
+  }catch(e){$("historyBody").innerHTML=`<tr><td colspan="9" class="history-empty">${esc(String(e))}</td></tr>`}finally{historyLoading=false}
+}
+function scheduleHistoryFilter(){historyState.page=1;clearTimeout(scheduleHistoryFilter.timer);scheduleHistoryFilter.timer=setTimeout(()=>void loadHistory(true),220)}
+["historyTarget","historyType","historySource","historyStatus","historyFrom","historyTo"].forEach(id=>$(id).onchange=scheduleHistoryFilter);
+$("historySearch").oninput=scheduleHistoryFilter;
+$("historyPageSize").onchange=()=>{historyState.pageSize=Number($("historyPageSize").value);historyState.page=1;void loadHistory(true)};
+$("historyPrev").onclick=()=>{if(historyState.page>1){historyState.page--;void loadHistory(true)}};
+$("historyNext").onclick=()=>{const pages=Math.max(1,Math.ceil(historyState.total/historyState.pageSize));if(historyState.page<pages){historyState.page++;void loadHistory(true)}};
+document.querySelectorAll("[data-history-sort]").forEach(th=>th.onclick=()=>{const key=th.dataset.historySort;if(historyState.sortBy===key)historyState.sortDir=historyState.sortDir==="asc"?"desc":"asc";else{historyState.sortBy=key;historyState.sortDir=key==="timestamp"?"desc":"asc"}historyState.page=1;void loadHistory(true)});
+$("historyClear").onclick=()=>{["historySearch","historyFrom","historyTo"].forEach(id=>$(id).value="");["historyTarget","historyType","historySource","historyStatus"].forEach(id=>$(id).value="");historyState.page=1;historyState.sortBy="timestamp";historyState.sortDir="desc";void loadHistory(true)};
 function render(){renderTargets();renderRules();renderSettings();renderNetworkIdentity()}
 function countRuleUses(ruleId){let n=0;for(const t of state.config.targets){for(const c of t.tcpChecks||[])if((c.alertRuleIds||[]).includes(ruleId))n++;for(const h of t.httpChecks||[])for(const ids of Object.values(h.fieldAlerts||{}))if(ids.includes(ruleId))n++}return n}
 async function persist(message="Saved."){try{normalizeStatus(await request("monitor.config.set",state.config));notice(message,"success");return true}catch(e){notice(String(e),"error");await refresh();return false}}
