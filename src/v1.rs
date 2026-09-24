@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +20,8 @@ const DEFAULT_TOPBAR_HISTORY_SECONDS: u64 = 60;
 const DEFAULT_NETWORK_IDENTITY_REFRESH_SECONDS: u64 = 5 * 60;
 const STATE_CONFIRMATION_SAMPLES: u32 = 2;
 const STORAGE_KEY: &str = "config";
+const HISTORY_STORAGE_KEY: &str = "history-v1";
+const MAX_HISTORY_EVENTS: usize = 10_000;
 const DEFAULT_TARGET_ID: &str = "target-8-8-8-8";
 const DEFAULT_TARGET_NAME: &str = "Google DNS";
 const DEFAULT_TARGET: &str = "8.8.8.8";
@@ -52,6 +54,7 @@ fn default_border_color() -> String { DEFAULT_BORDER_COLOR.to_string() }
 fn default_network_identity_topbar_source() -> String { "public".to_string() }
 fn default_network_identity_auto_refresh() -> bool { true }
 fn default_network_identity_refresh_seconds() -> u64 { DEFAULT_NETWORK_IDENTITY_REFRESH_SECONDS }
+fn default_false() -> bool { false }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -409,6 +412,10 @@ struct StoredConfig {
     network_identity_auto_refresh: bool,
     #[serde(default = "default_network_identity_refresh_seconds")]
     network_identity_refresh_seconds: u64,
+    #[serde(default = "default_false")]
+    network_identity_change_sound: bool,
+    #[serde(default = "default_false")]
+    network_identity_change_notification: bool,
 }
 impl Default for StoredConfig {
     fn default() -> Self { default_config() }
@@ -421,6 +428,70 @@ struct NetworkIdentity {
     interfaces: Vec<Value>,
     updated_at: Option<u64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryEvent {
+    id: String,
+    timestamp: u64,
+    #[serde(default)]
+    target_id: Option<String>,
+    #[serde(default)]
+    target_name: Option<String>,
+    event_type: String,
+    source: String,
+    name: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    old_value: String,
+    #[serde(default)]
+    new_value: String,
+    status: String,
+    sound: bool,
+    notification: bool,
+    acknowledged: bool,
+    reminder: bool,
+    #[serde(default)]
+    details: String,
+}
+#[derive(Debug, Clone)]
+struct HistoryState {
+    events: Arc<Mutex<Vec<HistoryEvent>>>,
+    dirty: Arc<AtomicBool>,
+}
+impl Default for HistoryState {
+    fn default() -> Self {
+        Self { events: Arc::new(Mutex::new(Vec::new())), dirty: Arc::new(AtomicBool::new(false)) }
+    }
+}
+impl HistoryState {
+    fn record(&self, event: HistoryEvent) {
+        if let Ok(mut events)=self.events.lock() {
+            events.push(event);
+            if events.len()>MAX_HISTORY_EVENTS {
+                let remove=events.len()-MAX_HISTORY_EVENTS;
+                events.drain(0..remove);
+            }
+            self.dirty.store(true,Ordering::Release);
+        }
+    }
+    fn snapshot(&self)->Vec<HistoryEvent>{self.events.lock().map(|events|events.clone()).unwrap_or_default()}
+    fn replace(&self, mut events:Vec<HistoryEvent>){
+        if events.len()>MAX_HISTORY_EVENTS { events.drain(0..events.len()-MAX_HISTORY_EVENTS); }
+        if let Ok(mut current)=self.events.lock(){*current=events;}
+        self.dirty.store(false,Ordering::Release);
+    }
+}
+fn history_id(prefix:&str)->String{format!("{prefix}-{}-{}",now_ms(),std::process::id())}
+fn target_history_event(monitor:&TargetMonitor,event_type:&str,source:&str,name:&str,value:String,status:&str,sound:bool,notification:bool,reminder:bool,details:String)->HistoryEvent{
+    HistoryEvent{
+        id:history_id("event"),timestamp:now_ms(),target_id:Some(monitor.target.id.clone()),target_name:Some(monitor.target.name.clone()),
+        event_type:event_type.into(),source:source.into(),name:name.into(),value,old_value:String::new(),new_value:String::new(),
+        status:status.into(),sound,notification,acknowledged:false,reminder,details,
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -593,12 +664,13 @@ struct MonitorStore {
     targets: BTreeMap<String, TargetMonitor>,
     config: StoredConfig,
     network_identity: NetworkIdentity,
+    history: HistoryState,
 }
 impl MonitorStore {
     fn new() -> Self {
         let config = default_config();
         let targets = config.targets.iter().cloned().map(|t| (t.id.clone(), TargetMonitor::new(t))).collect();
-        Self { targets, config, network_identity: NetworkIdentity::default() }
+        Self { targets, config, network_identity: NetworkIdentity::default(), history: HistoryState::default() }
     }
     fn replace_config(&mut self, config: StoredConfig) {
         let old = std::mem::take(&mut self.targets);
@@ -681,6 +753,8 @@ fn default_config() -> StoredConfig {
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
         network_identity_auto_refresh: default_network_identity_auto_refresh(),
         network_identity_refresh_seconds: default_network_identity_refresh_seconds(),
+        network_identity_change_sound: false,
+        network_identity_change_notification: false,
     }
 }
 
@@ -879,6 +953,56 @@ fn network_identity_topbar_item(identity:&NetworkIdentity,selected_source:&str)-
     })
 }
 
+fn network_identity_snapshot(identity:&NetworkIdentity)->BTreeMap<String,String>{
+    let mut out=BTreeMap::new();
+    if let Some(public_ip)=identity.public_ip.as_deref(){out.insert("Public IP".into(),public_ip.into());}
+    for interface in &identity.interfaces{
+        let name=interface.get("name").and_then(Value::as_str).unwrap_or("Interface");
+        if let Some(mac)=interface.get("macAddress").and_then(Value::as_str){if !mac.is_empty(){out.insert(format!("{name} · MAC"),mac.into());}}
+        for address in interface.get("addresses").and_then(Value::as_array).cloned().unwrap_or_default(){
+            let family=address.get("family").and_then(Value::as_str).unwrap_or("ip").to_ascii_uppercase();
+            if let Some(value)=address.get("address").and_then(Value::as_str){if !value.is_empty(){out.insert(format!("{name} · {family}"),value.into());}}
+        }
+    }
+    out
+}
+fn network_identity_change_details(previous:&NetworkIdentity,next:&NetworkIdentity)->Vec<String>{
+    if previous.updated_at.is_none(){return Vec::new();}
+    let old=network_identity_snapshot(previous);let new=network_identity_snapshot(next);
+    let mut keys=old.keys().chain(new.keys()).cloned().collect::<BTreeSet<_>>();
+    let mut changes=Vec::new();
+    for key in keys.iter(){
+        let before=old.get(key).map(String::as_str).unwrap_or("—");
+        let after=new.get(key).map(String::as_str).unwrap_or("—");
+        if before!=after{changes.push(format!("{key}: {before} → {after}"));}
+    }
+    changes
+}
+fn emit_network_identity_notification(output:&mpsc::Sender<Value>,details:&str){
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
+        "itemId":"network-identity","title":"Network Identity changed","body":bounded_notification_text(details,255),
+        "tone":"warning","silent":true,"action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
+    })});
+}
+fn handle_network_identity_change(output:&mpsc::Sender<Value>,history:&HistoryState,config:&StoredConfig,previous:&NetworkIdentity,next:&NetworkIdentity){
+    let changes=network_identity_change_details(previous,next);
+    if changes.is_empty(){return;}
+    let details=changes.join("\n");
+    let sound=config.network_identity_change_sound;
+    let notification=config.network_identity_change_notification;
+    history.record(HistoryEvent{
+        id:history_id("network"),timestamp:now_ms(),target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),
+        name:"Network Identity changed".into(),value:format!("{} change{}",changes.len(),if changes.len()==1{""}else{"s"}),old_value:String::new(),new_value:String::new(),
+        status:"Changed".into(),sound,notification,acknowledged:false,reminder:false,details:details.clone(),
+    });
+    if sound{
+        let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
+            "alertType":"networkIdentityChanged","ruleName":"Network Identity changed","source":"Network Identity","playSound":true,"sound":Value::Null,"fallbackBeep":true
+        })});
+    }
+    if notification{emit_network_identity_notification(output,&details);}
+}
+
 fn host_request(input:&mut impl Read, output:&mpsc::Sender<Value>, request_id:&mut u64, method:&'static str, params:Value)->Result<Value,String>{
     let id=*request_id; *request_id+=1;
     send_outbound(output,PluginHostRequest{message_type:"plugin.request",request_id:id,method,params})?;
@@ -900,6 +1024,68 @@ fn ensure_config_loaded(store:&Arc<Mutex<MonitorStore>>,input:&mut impl Read,out
     let config=match load_config(input,output,request_id)? { Some(c)=>normalize_config(c)?, None=>default_config() };
     store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.replace_config(config); Ok(())
 }
+fn load_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<Vec<HistoryEvent>,String>{
+    let result=host_request(input,output,request_id,"storage.get",json!({"key":HISTORY_STORAGE_KEY}))?;
+    match result.get("value"){None|Some(Value::Null)=>Ok(Vec::new()),Some(value)=>serde_json::from_value(value.clone()).map_err(|e|format!("invalid stored Target Monitor history: {e}"))}
+}
+fn save_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64,history:&HistoryState)->Result<(),String>{
+    if !history.dirty.load(Ordering::Acquire){return Ok(());}
+    let events=history.snapshot();
+    host_request(input,output,request_id,"storage.set",json!({"key":HISTORY_STORAGE_KEY,"value":events}))?;
+    history.dirty.store(false,Ordering::Release);
+    Ok(())
+}
+fn history_text(event:&HistoryEvent)->String{
+    format!("{} {} {} {} {} {} {} {} {}",event.target_name.as_deref().unwrap_or(""),event.event_type,event.source,event.name,event.value,event.old_value,event.new_value,event.status,event.details).to_ascii_lowercase()
+}
+fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
+    let search=params.get("search").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
+    let target=params.get("targetId").and_then(Value::as_str).unwrap_or("");
+    let event_type=params.get("eventType").and_then(Value::as_str).unwrap_or("");
+    let source=params.get("source").and_then(Value::as_str).unwrap_or("");
+    let status=params.get("status").and_then(Value::as_str).unwrap_or("");
+    let from=params.get("from").and_then(Value::as_u64).unwrap_or(0);
+    let to=params.get("to").and_then(Value::as_u64).unwrap_or(u64::MAX);
+    let mut rows=events.iter().filter(|event|{
+        (search.is_empty()||history_text(event).contains(&search))
+        &&(target.is_empty()||event.target_id.as_deref()==Some(target))
+        &&(event_type.is_empty()||event.event_type==event_type)
+        &&(source.is_empty()||event.source==source)
+        &&(status.is_empty()||event.status==status)
+        &&event.timestamp>=from&&event.timestamp<=to
+    }).cloned().collect::<Vec<_>>();
+    let sort_by=params.get("sortBy").and_then(Value::as_str).unwrap_or("timestamp");
+    let descending=params.get("sortDir").and_then(Value::as_str).unwrap_or("desc")!="asc";
+    rows.sort_by(|a,b|{
+        let order=match sort_by{
+            "target"=>a.target_name.cmp(&b.target_name),
+            "eventType"=>a.event_type.cmp(&b.event_type),
+            "source"=>a.source.cmp(&b.source),
+            "name"=>a.name.cmp(&b.name),
+            "status"=>a.status.cmp(&b.status),
+            _=>a.timestamp.cmp(&b.timestamp),
+        };
+        if descending{order.reverse()}else{order}
+    });
+    let total=rows.len();
+    let mut targets=BTreeSet::new();let mut types=BTreeSet::new();let mut sources=BTreeSet::new();let mut statuses=BTreeSet::new();
+    for event in events{
+        if let (Some(id),Some(name))=(&event.target_id,&event.target_name){targets.insert((id.clone(),name.clone()));}
+        types.insert(event.event_type.clone());sources.insert(event.source.clone());statuses.insert(event.status.clone());
+    }
+    if export_all{
+        return json!({"rows":rows,"total":total});
+    }
+    let page=params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let page_size=params.get("pageSize").and_then(Value::as_u64).unwrap_or(25).clamp(10,100) as usize;
+    let start=(page-1).saturating_mul(page_size);
+    let paged=rows.into_iter().skip(start).take(page_size).collect::<Vec<_>>();
+    json!({"rows":paged,"total":total,"page":page,"pageSize":page_size,"facets":{
+        "targets":targets.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),
+        "eventTypes":types,"sources":sources,"statuses":statuses
+    }})
+}
+
 
 fn resolve_target(target:&str)->Result<IpAddr,String>{
     let target=target.trim();
@@ -980,7 +1166,7 @@ fn rule_matches(rule:&GenericAlertRule,current:&Value,previous:Option<&Value>)->
 fn sound_payload(sound:&Option<SoundConfig>)->Value{
     match sound { Some(s)=>json!({"filename":s.filename,"mime":s.mime,"dataUrl":s.data_url,"durationMs":s.duration_ms}),None=>Value::Null }
 }
-fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],source:&str,current:Value,assigned:&[String]){
+fn evaluate_rules(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],source:&str,current:Value,assigned:&[String]){
     let previous=monitor.previous_values.get(source).cloned();
     for rule_id in assigned {
         let Some(rule)=rules.iter().find(|r|&r.id==rule_id) else {continue};
@@ -991,58 +1177,62 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&
             let alert=ActiveAlert{key:key.clone(),target_id:monitor.target.id.clone(),rule_id:rule.id.clone(),rule_name:rule.name.clone(),source:source.into(),current_value:current.clone(),since:now,acknowledged:false};
             monitor.active_alerts.insert(key.clone(),alert.clone());
             monitor.last_generic_alert_at.insert(key.clone(),now);
+            let sound=true;
+            let notification=monitor.target.show_alert_notifications;
             let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
             emit_rule_notification(output,monitor,rule,source,&current,false);
+            history.record(target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Triggered",sound,notification,false,String::new()));
         } else if matches {
             let should_remind=rule.reminders_enabled && monitor.last_generic_alert_at.get(&key).map(|last|now.saturating_sub(*last)>=rule.reminder_interval_seconds.saturating_mul(1000)).unwrap_or(true);
             if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();if should_remind{alert.acknowledged=false;}}
             if should_remind {
                 monitor.last_generic_alert_at.insert(key.clone(),now);
+                let sound=true;
+                let notification=monitor.target.show_alert_notifications;
                 let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
                 emit_rule_notification(output,monitor,rule,source,&current,true);
+                history.record(target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Reminder",sound,notification,true,String::new()));
             }
+        } else if monitor.active_alerts.remove(&key).is_some() {
+            monitor.last_generic_alert_at.remove(&key);
+            history.record(target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Resolved",false,false,false,String::new()));
         } else {
-            monitor.active_alerts.remove(&key);
             monitor.last_generic_alert_at.remove(&key);
         }
     }
     monitor.previous_values.insert(source.into(),current);
 }
-fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
+fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut TargetMonitor,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
     let current=monitor.last_state.clone();
     let selection=if let Some((previous,next))=transition {
         match (previous.as_str(),next.as_str()) {
-            ("NORMAL","HIGH LATENCY")|("READY","HIGH LATENCY")=>Some(("highLatency",&alerts.high_latency,false)),
-            ("NORMAL","OFFLINE")|("HIGH LATENCY","OFFLINE")|("READY","OFFLINE")=>Some(("offline",&alerts.offline,false)),
-            ("OFFLINE","NORMAL")|("OFFLINE","HIGH LATENCY")|("HIGH LATENCY","NORMAL")=>Some(("recovery",&alerts.recovery,false)),
+            ("NORMAL","HIGH LATENCY")|("READY","HIGH LATENCY")=>Some(("highLatency","High latency",&alerts.high_latency,false)),
+            ("NORMAL","OFFLINE")|("HIGH LATENCY","OFFLINE")|("READY","OFFLINE")=>Some(("offline","Offline",&alerts.offline,false)),
+            ("OFFLINE","NORMAL")|("OFFLINE","HIGH LATENCY")|("HIGH LATENCY","NORMAL")=>Some(("recovery","Recovery",&alerts.recovery,false)),
             _=>None
         }
     } else if alerts.reminders_enabled {
         match current.as_str() {
-            "HIGH LATENCY"=>Some(("highLatency",&alerts.high_latency,true)),
-            "OFFLINE"=>Some(("offline",&alerts.offline,true)),
+            "HIGH LATENCY"=>Some(("highLatency","High latency",&alerts.high_latency,true)),
+            "OFFLINE"=>Some(("offline","Offline",&alerts.offline,true)),
             _=>None
         }
     } else { None };
-    let Some((kind,rule,reminder))=selection else{return};
+    let Some((kind,label,rule,reminder))=selection else{return};
     let play_sound=alerts.enabled && rule.sound_enabled();
-    let show_notification=rule.notification_enabled();
-    if !play_sound && !show_notification{return;}
+    let show_notification=rule.notification_enabled() && monitor.target.show_alert_notifications;
+    if !play_sound && !rule.notification_enabled(){return;}
     let now=now_ms();
     let interval=if reminder{alerts.reminder_interval_seconds}else{rule.cooldown_seconds}.saturating_mul(1000);
     if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
     monitor.last_legacy_alert_at.insert(kind.to_string(),now);
     let target=&monitor.target;
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
-        "targetId":target.id,
-        "targetName":target.name,
-        "alertType":kind,
-        "reminder":reminder,
-        "playSound":play_sound,
-        "sound":sound_payload(&rule.sound),
-        "fallbackBeep":play_sound && rule.sound.is_none()
+        "targetId":target.id,"targetName":target.name,"alertType":kind,"ruleName":label,"source":"ping.latency",
+        "reminder":reminder,"playSound":play_sound,"sound":sound_payload(&rule.sound),"fallbackBeep":play_sound && rule.sound.is_none()
     })});
-    if show_notification{emit_legacy_notification(output,monitor,kind,reminder);}
+    if rule.notification_enabled(){emit_legacy_notification(output,monitor,kind,reminder);}
+    history.record(target_history_event(monitor,"Ping", "ping.latency",label,formatted_source_value(monitor,"ping.latency",true),if reminder{"Reminder"}else if kind=="recovery"{"Recovered"}else{"Triggered"},play_sound,show_notification,reminder,String::new()));
 }
 
 fn source_value(monitor:&TargetMonitor,source:&str)->Value{
@@ -1275,6 +1465,9 @@ fn main()->Result<(),String>{
     let store=Arc::new(Mutex::new(MonitorStore::new()));
     let mut host_request_id=1u64;
     ensure_config_loaded(&store,&mut input,&output_tx,&mut host_request_id)?;
+    if let Ok(events)=load_history(&mut input,&output_tx,&mut host_request_id){
+        if let Ok(guard)=store.lock(){guard.history.replace(events);}
+    }
     if let Ok(result)=host_request(&mut input,&output_tx,&mut host_request_id,"network.interfaces",json!({})) {
         if let Ok(mut guard)=store.lock() {
             guard.network_identity.interfaces=result.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -1312,10 +1505,11 @@ fn main()->Result<(),String>{
                 let ping=sample_ping(&target);
                 let payload={
                     let mut guard=match ping_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let history=guard.history.clone();
                     let Some(current)=guard.targets.get_mut(&id) else{continue};
                     if current.target!=target{continue}
                     let transition=current.record_ping(&ping,retention);
-                    legacy_alert(&ping_output,current,&legacy,transition);
+                    legacy_alert(&ping_output,&history,current,&legacy,transition);
                     Some(current.summary())
                 };
                 if let Some(payload)=payload{let _=send_outbound(&ping_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});}
@@ -1336,11 +1530,12 @@ fn main()->Result<(),String>{
                 let results=target.tcp_checks.iter().filter(|x|x.enabled).map(|check|(check.clone(),sample_tcp(&target,check))).collect::<Vec<_>>();
                 let payload={
                     let mut guard=match tcp_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let history=guard.history.clone();
                     let Some(current)=guard.targets.get_mut(&id) else{continue};
                     if current.target!=target{continue}
                     for (check,result) in results {
                         if let Some(ms)=result.latency_ms{current.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp,retention);}
-                        evaluate_rules(&tcp_output,current,&rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
+                        evaluate_rules(&tcp_output,&history,current,&rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
                         current.tcp_results.insert(check.id.clone(),result);
                     }
                     Some(current.summary())
@@ -1363,6 +1558,7 @@ fn main()->Result<(),String>{
                 let results=target.http_checks.iter().filter(|x|x.enabled).map(|check|(check.clone(),sample_http(check))).collect::<Vec<_>>();
                 let payload={
                     let mut guard=match http_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let history=guard.history.clone();
                     let Some(current)=guard.targets.get_mut(&id) else{continue};
                     if current.target!=target{continue}
                     for (check,result) in results {
@@ -1370,9 +1566,9 @@ fn main()->Result<(),String>{
                         for (field,value) in &result.fields {
                             let source=format!("http:{}.{}",check.id,field);
                             if let Some(v)=numeric(value){current.record_metric(&source,v,result.timestamp,retention);}
-                            if let Some(ids)=check.field_alerts.get(field){evaluate_rules(&http_output,current,&rules,&source,value.clone(),ids);}
+                            if let Some(ids)=check.field_alerts.get(field){evaluate_rules(&http_output,&history,current,&rules,&source,value.clone(),ids);}
                         }
-                        if check.detect_changes{evaluate_rules(&http_output,current,&rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[]));}
+                        if check.detect_changes{evaluate_rules(&http_output,&history,current,&rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[]));}
                         current.http_results.insert(check.id.clone(),result);
                     }
                     Some(current.summary())
@@ -1394,12 +1590,18 @@ fn main()->Result<(),String>{
                     Ok(interfaces)=>{
                         let (public_ip,public_ip_error)=match lookup_public_ip(){Ok(address)=>(Some(address),None),Err(error)=>(None,Some(error))};
                         let identity=NetworkIdentity{
-                            public_ip,
-                            public_ip_error,
+                            public_ip,public_ip_error,
                             interfaces:interfaces.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default(),
                             updated_at:Some(now_ms()),
                         };
-                        if let Ok(mut guard)=store.lock(){guard.network_identity=identity.clone();let _=emit_surfaces(&output_tx,&guard);}
+                        if let Ok(mut guard)=store.lock(){
+                            let previous=guard.network_identity.clone();
+                            handle_network_identity_change(&output_tx,&guard.history,&guard.config,&previous,&identity);
+                            guard.network_identity=identity.clone();
+                            let _=emit_surfaces(&output_tx,&guard);
+                        }
+                        let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                        let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
                         PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:network_identity_value(&identity),error:String::new()}
                     }
                     Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
@@ -1416,7 +1618,24 @@ fn main()->Result<(),String>{
                     }
                 }
             }
-            "monitor.status"=>{let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}}
+            "monitor.status"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}
+            }
+            "monitor.history.query"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:history_query(&rows,&request.params,false),error:String::new()}
+            }
+            "monitor.history.export"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:history_query(&rows,&request.params,true),error:String::new()}
+            }
             "monitor.config.set"=>{
                 let config:Result<StoredConfig,_>=serde_json::from_value(request.params.clone());
                 match config.map_err(|e|format!("invalid config: {e}")).and_then(normalize_config){
@@ -1455,7 +1674,11 @@ fn main()->Result<(),String>{
                     None=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"target not found".into()}
                 }
             }
-            "monitor.shutdown"=>{let response=PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"stopped":true}),error:String::new()};send_outbound(&output_tx,response)?;break}
+            "monitor.shutdown"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let response=PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"stopped":true}),error:String::new()};send_outbound(&output_tx,response)?;break
+            }
             _=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:format!("unsupported Target Monitor method: {}",request.method)}
         };
         send_outbound(&output_tx,response)?;
@@ -1466,6 +1689,14 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn network_identity_change_alerts_default_off(){let c=default_config();assert!(!c.network_identity_change_sound);assert!(!c.network_identity_change_notification);}
+    #[test] fn network_identity_initial_snapshot_is_not_a_change(){let mut first=NetworkIdentity::default();first.public_ip=Some("203.0.113.1".into());assert!(network_identity_change_details(&NetworkIdentity::default(),&first).is_empty());}
+    #[test] fn network_identity_change_detects_public_ip_update(){let mut a=NetworkIdentity::default();a.public_ip=Some("203.0.113.1".into());a.updated_at=Some(1);let mut b=a.clone();b.public_ip=Some("203.0.113.2".into());b.updated_at=Some(2);assert_eq!(network_identity_change_details(&a,&b).len(),1);}
+    #[test] fn history_query_filters_and_sorts(){let events=vec![
+        HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
+        HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
+    ];let q=history_query(&events,&json!({"eventType":"Alert","page":1,"pageSize":25}),false);assert_eq!(q["total"],1);assert_eq!(q["rows"][0]["id"],"1");}
+
     #[test] fn network_identity_refresh_defaults_are_backward_compatible(){let c=default_config();assert!(c.network_identity_auto_refresh);assert_eq!(c.network_identity_refresh_seconds,300);}
     #[test] fn network_identity_refresh_interval_is_bounded_to_supported_values(){let mut c=default_config();c.network_identity_refresh_seconds=42;assert!(validate_config(&c).is_err());c.network_identity_refresh_seconds=600;assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_topbar_can_be_hidden(){let s=MonitorStore::new();let items=topbar_value(&s)["items"].as_array().unwrap().clone();assert!(items.iter().all(|item|item["id"]!="target-monitor:network-identity"));}
