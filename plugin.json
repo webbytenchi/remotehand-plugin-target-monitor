@@ -17,6 +17,7 @@
     "network.connect",
     "network.inspect",
     "clipboard.write",
+    "files.save",
     "storage.plugin",
     "tray.contribute",
     "notifications.show"
