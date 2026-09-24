@@ -16,7 +16,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
 </head>
 <body><div class="shell">
 <div class="header"><h1>Target Monitor</h1><span id="runtime" class="badge">CONNECTING</span></div>
-<div class="tabs"><button class="tab active" data-tab="targets">Targets</button><button class="tab" data-tab="alerts">Alerts</button><button class="tab" data-tab="settings">Settings</button><span class="network-tab-separator" aria-hidden="true"></span><button class="tab" data-tab="network">Network Identity</button><button class="tab" data-tab="history">History</button></div>
+<div class="tabs"><button class="tab active" data-tab="targets">Targets</button><button class="tab" data-tab="alerts">Alerts</button><button class="tab" data-tab="settings">Settings</button><span class="network-tab-separator" aria-hidden="true"></span><button class="tab" data-tab="network">Network Identity</button><span class="network-tab-separator" aria-hidden="true"></span><button class="tab" data-tab="history">History</button></div>
 <div id="notice" class="notice" hidden><span id="noticeText" class="notice-text"></span><button id="noticeClose" class="notice-close" type="button" aria-label="Dismiss message">×</button></div>
 
 <section id="targetsPanel" class="panel active">
@@ -85,19 +85,21 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
       <label class="checkline"><input id="networkIdentityAutoRefresh" type="checkbox"> Auto refresh Network Identity</label>
       <div class="field"><label>Refresh interval</label><select id="networkIdentityRefreshSeconds"><option value="60">1 minute</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></div>
     </div>
-    <div class="subbox">
-      <h3>Change alerts</h3>
-      <div class="network-identity-controls">
-        <label class="checkline"><input id="networkIdentityChangeSound" type="checkbox"> Sound when Network Identity changes</label>
-        <label class="checkline"><input id="networkIdentityChangeNotification" type="checkbox"> Native notification when Network Identity changes</label>
+    <div class="ping-alert-rule">
+      <div class="ping-alert-rule-head">
+        <span class="ping-alert-rule-title">Network Identity changes</span>
+        <div class="row">
+          <label class="checkline"><input id="networkIdentityChangeSound" type="checkbox"> Sound</label>
+          <label class="checkline"><input id="networkIdentityChangeNotification" type="checkbox"> Notification</label>
+        </div>
       </div>
-      <p class="muted">The first snapshot establishes the baseline and never alerts. Later meaningful Public IP, interface, MAC, IPv4, or IPv6 changes are always recorded in History; sound and notification are optional.</p>
+      <div class="ping-alert-note">The first snapshot establishes the baseline and never alerts. Later meaningful Public IP, interface, MAC, IPv4, or IPv6 changes are always recorded in History; Sound and Notification only control delivery.</div>
     </div>
     <p class="muted">When auto refresh is off, Network Identity is still loaded once at RemoteHand startup and can be refreshed manually. Network Identity uses RemoteHand's generic network interface API. Public IP is resolved separately by Target Monitor.</p>
   </div>
 </section>
 <section id="historyPanel" class="panel">
-  <div class="section-title"><h2>History</h2><div class="spacer"></div><button id="historyExport" class="btn" type="button">Export CSV</button></div>
+  <div class="section-title"><h2>History</h2><div class="spacer"></div><button id="historyRefresh" class="btn" type="button">Refresh</button><button id="historyExport" class="btn" type="button">Export CSV</button></div>
   <div class="card">
     <div class="history-toolbar">
       <div class="field"><label>Search</label><input id="historySearch" type="search" placeholder="Search events, targets, values…"></div>
@@ -458,6 +460,7 @@ $("historyPrev").onclick=()=>{if(historyState.page>1){historyState.page--;void l
 $("historyNext").onclick=()=>{const pages=Math.max(1,Math.ceil(historyState.total/historyState.pageSize));if(historyState.page<pages){historyState.page++;void loadHistory(true)}};
 document.querySelectorAll("[data-history-sort]").forEach(th=>th.onclick=()=>{const key=th.dataset.historySort;if(historyState.sortBy===key)historyState.sortDir=historyState.sortDir==="asc"?"desc":"asc";else{historyState.sortBy=key;historyState.sortDir=key==="timestamp"?"desc":"asc"}historyState.page=1;void loadHistory(true)});
 $("historyClear").onclick=()=>{["historySearch","historyFrom","historyTo"].forEach(id=>$(id).value="");["historyTarget","historyType","historySource","historyStatus"].forEach(id=>$(id).value="");historyState.page=1;historyState.sortBy="timestamp";historyState.sortDir="desc";void loadHistory(true)};
+$("historyRefresh").onclick=()=>void loadHistory(true);
 function csvCell(value){const text=String(value??"");return /[",\r\n]/.test(text)?'"'+text.replaceAll('"','""')+'"':text}
 $("historyExport").onclick=async()=>{
   const button=$("historyExport");button.disabled=true;button.textContent="Exporting…";
@@ -733,8 +736,8 @@ function refreshReportLive(targetId){
 async function showReport(targetId){let r=runtimeTarget(targetId),t=configTarget(targetId);if(!r||!t){await refresh();r=runtimeTarget(targetId);t=configTarget(targetId)}if(!r||!t)return;detailTargetId=targetId;contextTargetId=targetId;selectTab("targets");open("reportModal");$("reportTitle").textContent=t.name;$("reportAddress").textContent=t.address;$("reportState").textContent=r.state||"READY";$("reportState").className="state "+stateClass(r.state);const ping=r.history||[],outage=pingOutageContext(r);$("reportBody").innerHTML=`<div class="section-title"><h2>Overview</h2></div><div class="report-grid"><div class="metric"><span class="muted">Ping</span><strong id="reportPingValue">${r.currentLatencyMs==null?"—":esc(r.currentLatencyMs)+" ms"}</strong><span id="reportPingState" class="muted">${esc(r.pingState||"")}</span><span id="reportPingOutage" class="ping-outage-context" ${r.pingState==="OFFLINE"&&outage?"":"hidden"}>${esc(outage)}</span></div><div class="metric"><span class="muted">TCP</span><strong id="reportTcpSummary">${(r.tcpResults||[]).filter(x=>x.reachable).length}/${(r.tcpResults||[]).length}</strong></div><div class="metric"><span class="muted">HTTP</span><strong id="reportHttpSummary">${(r.httpResults||[]).filter(x=>!x.error&&x.statusCode<400).length}/${(r.httpResults||[]).length}</strong></div><div class="metric"><span class="muted">Alerts</span><strong id="reportAlertSummary">${(r.activeAlerts||[]).length||"None"}</strong></div></div><div class="section-title"><h2 id="reportPingTitle">Recent Ping Latency · ${esc(formatWindow(state.config.monitoring?.historyRetentionSeconds??3600))}</h2></div><div id="reportPingSpark" class="subbox">${sparkHtml(ping,t,state.config.monitoring?.historyRetentionSeconds??3600)}</div><div class="section-title"><h2>TCP Checks</h2></div><div class="subbox"><table class="table"><thead><tr><th>Service</th><th>Port</th><th>Status</th><th>Connect</th></tr></thead><tbody id="reportTcpBody">${renderTcpRows(r)}</tbody></table></div><div class="section-title"><h2>HTTP / HTTPS</h2></div>${(r.httpResults||[]).map(x=>reportHttpSection(r,t,x)).join("")||"<div class=muted>No HTTP requests.</div>"}<div class="section-title"><h2>Active Alerts</h2></div><div id="reportActiveAlerts" class="subbox">${renderActiveAlertsHtml(r,t)}</div><div class="section-title"><h2>Recent History</h2></div><div id="reportRecentHistory" class="subbox"><div class="muted">Loading recent history…</div></div>`;applyReportGraphAppearance(t);bindReportHttpTools(r,t);void loadReportHistory(targetId);if((r.unreadAlertCount||0)>0){request("monitor.alerts.acknowledge",{targetId}).then(refresh).catch(()=>{})}}
 window.addEventListener("message",e=>{const ctx=e.data?.type==="remotehand.plugin.context"?e.data.context:null;if(ctx)applyPanelContext(ctx)});
 window.addEventListener("remotehand-plugin-context",e=>{const ctx=e.detail;if(ctx)applyPanelContext(ctx)});
-if(bridge?.onEvent){bridge.onEvent("monitor.ready",normalizeStatus);bridge.onEvent("monitor.sampled",payload=>{const i=state.targets.findIndex(x=>x.id===payload.id);if(i>=0)state.targets[i]=payload;else state.targets.push(payload);renderTargets();if(detailTargetId===payload.id&&$("reportModal").classList.contains("open"))refreshReportLive(payload.id)});bridge.onEvent("monitor.alert",p=>{notice(p.alertType==="networkIdentityChanged"?"Network Identity changed":`Alert: ${p.ruleName||p.alertType} · ${p.targetName||""}`,"warning");if(p.playSound!==false)playAlert(p);if($("historyPanel").classList.contains("active"))void loadHistory(true)})}
+if(bridge?.onEvent){bridge.onEvent("monitor.ready",normalizeStatus);bridge.onEvent("monitor.sampled",payload=>{const i=state.targets.findIndex(x=>x.id===payload.id);if(i>=0)state.targets[i]=payload;else state.targets.push(payload);renderTargets();if(detailTargetId===payload.id&&$("reportModal").classList.contains("open"))refreshReportLive(payload.id)});bridge.onEvent("monitor.alert",p=>{notice(p.alertType==="networkIdentityChanged"?"Network Identity changed":`Alert: ${p.ruleName||p.alertType} · ${p.targetName||""}`,"warning");if(p.playSound!==false)playAlert(p)});bridge.onEvent("monitor.history.changed",p=>{if($("historyPanel").classList.contains("active"))void loadHistory(true);if(detailTargetId&&$("reportModal").classList.contains("open")&&p?.targetId===detailTargetId)void loadReportHistory(detailTargetId)})}
 async function playAlert(p){try{if(p.sound?.dataUrl){await new Audio(p.sound.dataUrl).play();return}const C=window.AudioContext||window.webkitAudioContext;if(!C)return;const c=new C(),o=c.createOscillator(),g=c.createGain();o.frequency.value=880;g.gain.value=.12;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+.7)}catch{}}
-selectTab("targets");refresh();setInterval(()=>{if(document.visibilityState!=="hidden"){refresh();if($("historyPanel").classList.contains("active"))void loadHistory(true)}},5000);
+selectTab("targets");refresh();setInterval(()=>{if(document.visibilityState!=="hidden")refresh()},5000);
 })();
 </script></body></html>
