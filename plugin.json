@@ -23,6 +23,14 @@
     "notifications.show"
   ],
   "contributes": {
+    "sidebar": [
+      {
+        "id": "target-monitor",
+        "title": "Target Monitor",
+        "icon": "monitor-pulse",
+        "panel": "target-monitor"
+      }
+    ],
     "panels": [
       {
         "id": "target-monitor",
