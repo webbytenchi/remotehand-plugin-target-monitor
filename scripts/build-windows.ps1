@@ -49,3 +49,21 @@ Write-Host "  Size: $packageMiB MiB"
 Write-Host ""
 Write-Host "Install THIS folder from RemoteHand (not the repository root):"
 Write-Host "  $packageDir"
+
+
+$zipPath = Join-Path $repo "dist\remotehand-target-monitor-v0.7.3-test-windows-x86_64.zip"
+if (Test-Path $zipPath) {
+    Remove-Item -Force $zipPath
+}
+Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+$zipHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash
+$checksumPath = Join-Path $repo "dist\SHA256SUMS.txt"
+"$zipHash  $(Split-Path -Leaf $zipPath)" | Set-Content -Encoding ascii $checksumPath
+
+Write-Host ""
+Write-Host "Validation ZIP created:"
+Write-Host "  $zipPath"
+Write-Host "  SHA256: $zipHash"
+Write-Host ""
+Write-Host "Checksum file:"
+Write-Host "  $checksumPath"

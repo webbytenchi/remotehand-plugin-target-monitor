@@ -1,6 +1,6 @@
 [package]
 name = "remotehand-target-monitor"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2021"
 autobins = false
 

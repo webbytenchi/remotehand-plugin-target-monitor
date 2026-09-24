@@ -37,6 +37,8 @@ const DEFAULT_LATENCY_COLOR: &str = "#dce4ee";
 const DEFAULT_VALUE_ALERT_COLOR: &str = "#efaaaa";
 const DEFAULT_BACKGROUND_COLOR: &str = "#16263a";
 const DEFAULT_BORDER_COLOR: &str = "#3b5f8d";
+const MAX_TRAY_TOOLTIP_BYTES: usize = 256;
+const MAX_TRAY_SERIES_POINTS: usize = 60;
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
@@ -1448,6 +1450,27 @@ fn emit_legacy_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMoni
         tone,
     );
 }
+fn truncate_utf8_bytes(value:&str,max_bytes:usize)->String{
+    if value.len()<=max_bytes{return value.to_string();}
+    if max_bytes==0{return String::new();}
+    let suffix="…";
+    let suffix_bytes=suffix.len();
+    if max_bytes<suffix_bytes{return String::new();}
+    let mut end=max_bytes-suffix_bytes;
+    while end>0 && !value.is_char_boundary(end){end-=1;}
+    let mut out=value[..end].to_string();
+    out.push_str(suffix);
+    out
+}
+fn tray_tooltip(value:String)->String{
+    truncate_utf8_bytes(&value,MAX_TRAY_TOOLTIP_BYTES)
+}
+fn tray_series(mut series:Vec<Value>)->Vec<Value>{
+    if series.len()>MAX_TRAY_SERIES_POINTS{
+        series.drain(0..series.len()-MAX_TRAY_SERIES_POINTS);
+    }
+    series
+}
 fn exposed_http_tooltip_lines(monitor:&TargetMonitor)->Vec<String>{
     let mut lines=Vec::new();
     for check in &monitor.target.http_checks {
@@ -1530,8 +1553,8 @@ fn topbar_value(store:&MonitorStore)->Value{
 fn tray_value(store:&MonitorStore)->Value{
     let mut items=store.targets.values().filter(|m|m.target.show_in_system_tray||m.target.show_alert_notifications).map(|m|{
         let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
-        let series=graph_series_for(m,source,store.config.monitoring.topbar_history_seconds);
-        json!({"id":m.target.id,"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,source),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled&&m.target.show_in_system_tray,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
+        let series=tray_series(graph_series_for(m,source,store.config.monitoring.topbar_history_seconds));
+        json!({"id":m.target.id,"title":m.target.name,"tooltip":tray_tooltip(surface_tooltip(m,&m.target.topbar.value_source,source)),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled&&m.target.show_in_system_tray,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
     if store.config.network_identity_change_notification {
         items.push(json!({
@@ -1893,6 +1916,24 @@ mod tests {
     #[test] fn network_identity_topbar_can_be_hidden(){let s=MonitorStore::new();let items=topbar_value(&s)["items"].as_array().unwrap().clone();assert!(items.iter().all(|item|item["id"]!="target-monitor:network-identity"));}
     #[test] fn network_identity_topbar_contains_public_ip(){let mut s=MonitorStore::new();s.config.show_network_identity_topbar=true;s.network_identity.public_ip=Some("203.0.113.10".into());let items=topbar_value(&s)["items"].as_array().unwrap().clone();let item=items.iter().find(|item|item["id"]=="target-monitor:network-identity").unwrap();assert_eq!(item["content"]["label"],"203.0.113.10");assert_eq!(item["menu"]["items"][0]["action"]["method"],"monitor.clipboard.write");}
     #[test] fn network_identity_topbar_uses_selected_interface(){let mut s=MonitorStore::new();s.config.show_network_identity_topbar=true;s.config.network_identity_topbar_source="interface:Wi-Fi:ipv4".into();s.network_identity.interfaces=vec![json!({"name":"Wi-Fi","addresses":[{"address":"192.168.1.25","family":"ipv4"}]})];let items=topbar_value(&s)["items"].as_array().unwrap().clone();let item=items.iter().find(|item|item["id"]=="target-monitor:network-identity").unwrap();assert_eq!(item["icon"],"wifi");assert_eq!(item["content"]["label"],"192.168.1.25");}
+    #[test]
+    fn tray_tooltip_is_capped_to_host_limit_without_splitting_utf8(){
+        let input=format!("{} {}", "x".repeat(250), "温度".repeat(20));
+        let output=tray_tooltip(input);
+        assert!(output.len()<=MAX_TRAY_TOOLTIP_BYTES);
+        assert!(output.is_char_boundary(output.len()));
+        assert!(output.ends_with('…'));
+    }
+
+    #[test]
+    fn tray_series_keeps_newest_sixty_points(){
+        let series=(0..75).map(|n|json!({"value":n})).collect::<Vec<_>>();
+        let capped=tray_series(series);
+        assert_eq!(capped.len(),60);
+        assert_eq!(capped.first().unwrap()["value"],json!(15));
+        assert_eq!(capped.last().unwrap()["value"],json!(74));
+    }
+
     #[test] fn time_window_excludes_old_topbar_points(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.metric_history.insert("x".into(),vec![MetricRecord{timestamp:now-120000,value:1.0},MetricRecord{timestamp:now,value:2.0}]);let series=graph_series_for(m,"x",60);let numeric=series.iter().filter(|p|p["value"].as_f64().is_some()).collect::<Vec<_>>();assert_eq!(numeric.len(),1);assert_eq!(numeric[0]["value"],json!(2.0));assert!(series.iter().any(|p|p["value"].is_null()));}
     #[test] fn config_rejects_invalid_monitoring_windows(){let mut c=default_config();c.monitoring.http_interval_seconds=0;assert!(validate_config(&c).is_err());c=default_config();c.monitoring.topbar_history_seconds=5;assert!(validate_config(&c).is_err());}
     #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
