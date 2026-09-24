@@ -51,7 +51,7 @@ Write-Host "Install THIS folder from RemoteHand (not the repository root):"
 Write-Host "  $packageDir"
 
 
-$zipPath = Join-Path $repo "dist\remotehand-target-monitor-v0.7.3-test-windows-x86_64.zip"
+$zipPath = Join-Path $repo "dist\remotehand-target-monitor-v0.7.4-test-windows-x86_64.zip"
 if (Test-Path $zipPath) {
     Remove-Item -Force $zipPath
 }
