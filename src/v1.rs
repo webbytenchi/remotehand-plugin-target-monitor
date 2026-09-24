@@ -404,6 +404,8 @@ struct StoredConfig {
     alerts: LegacyAlertConfig,
     #[serde(default)]
     alert_rules: Vec<GenericAlertRule>,
+    #[serde(default = "default_true")]
+    show_in_sidebar: bool,
     #[serde(default)]
     show_network_identity_topbar: bool,
     #[serde(default = "default_network_identity_topbar_source")]
@@ -760,6 +762,7 @@ fn default_target() -> MonitorTarget {
 fn default_config() -> StoredConfig {
     StoredConfig {
         targets: vec![default_target()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
+        show_in_sidebar: true,
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
         network_identity_auto_refresh: default_network_identity_auto_refresh(),
         network_identity_refresh_seconds: default_network_identity_refresh_seconds(),
@@ -1482,7 +1485,10 @@ fn tray_value(store:&MonitorStore)->Value{
 }
 fn emit_surfaces(output:&mpsc::Sender<Value>,store:&MonitorStore)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"topbar.update",payload:topbar_value(store)})?;
-    send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray_value(store)})
+    send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray_value(store)})?;
+    send_outbound(output,PluginEvent{message_type:"plugin.event",event:"sidebar.update",payload:json!({
+        "items":[{"id":"target-monitor","visible":store.config.show_in_sidebar}]
+    })})
 }
 fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules,"networkIdentity":network_identity_value(&store.network_identity)})}
 
@@ -1792,6 +1798,7 @@ mod tests {
         HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
     ];let q=history_query(&events,&json!({"eventType":"Alert","page":1,"pageSize":25}),false);assert_eq!(q["total"],1);assert_eq!(q["rows"][0]["id"],"1");}
 
+    #[test] fn sidebar_visibility_defaults_on_for_backward_compatibility(){let c=default_config();assert!(c.show_in_sidebar);}
     #[test] fn network_identity_refresh_defaults_are_backward_compatible(){let c=default_config();assert!(c.network_identity_auto_refresh);assert_eq!(c.network_identity_refresh_seconds,300);}
     #[test] fn network_identity_refresh_interval_is_bounded_to_supported_values(){let mut c=default_config();c.network_identity_refresh_seconds=42;assert!(validate_config(&c).is_err());c.network_identity_refresh_seconds=600;assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_topbar_can_be_hidden(){let s=MonitorStore::new();let items=topbar_value(&s)["items"].as_array().unwrap().clone();assert!(items.iter().all(|item|item["id"]!="target-monitor:network-identity"));}
@@ -1800,7 +1807,7 @@ mod tests {
     #[test] fn time_window_excludes_old_topbar_points(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.metric_history.insert("x".into(),vec![MetricRecord{timestamp:now-120000,value:1.0},MetricRecord{timestamp:now,value:2.0}]);let series=graph_series_for(m,"x",60);let numeric=series.iter().filter(|p|p["value"].as_f64().is_some()).collect::<Vec<_>>();assert_eq!(numeric.len(),1);assert_eq!(numeric[0]["value"],json!(2.0));assert!(series.iter().any(|p|p["value"].is_null()));}
     #[test] fn config_rejects_invalid_monitoring_windows(){let mut c=default_config();c.monitoring.http_interval_seconds=0;assert!(validate_config(&c).is_err());c=default_config();c.monitoring.topbar_history_seconds=5;assert!(validate_config(&c).is_err());}
     #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
-    #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
+    #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert!(c.show_in_sidebar);assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
     #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
