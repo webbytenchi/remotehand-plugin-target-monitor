@@ -248,6 +248,8 @@ struct HttpCheck {
     #[serde(default)]
     discovered_fields: BTreeMap<String, String>,
     #[serde(default)]
+    exposed_fields: Vec<String>,
+    #[serde(default)]
     field_alerts: BTreeMap<String, Vec<String>>,
 }
 
@@ -1446,6 +1448,21 @@ fn emit_legacy_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMoni
         tone,
     );
 }
+fn exposed_http_tooltip_lines(monitor:&TargetMonitor)->Vec<String>{
+    let mut lines=Vec::new();
+    for check in &monitor.target.http_checks {
+        if check.exposed_fields.is_empty(){continue;}
+        let result=monitor.http_results.get(&check.id);
+        for field in &check.exposed_fields {
+            let value=result.and_then(|r|r.fields.get(field))
+                .map(display_value)
+                .filter(|v|!v.is_empty())
+                .unwrap_or_else(||"—".to_string());
+            lines.push(format!("{} · {}: {}",check.name,field,value));
+        }
+    }
+    lines
+}
 fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->String{
     let mut parts=vec![format!("{} · {}",monitor.target.name,monitor.overall_state())];
     if value_source!="none"{
@@ -1454,7 +1471,14 @@ fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->
     if graph_source!="none"{
         parts.push(format!("Graph: {} · last {}",source_label(monitor,graph_source),formatted_source_value(monitor,graph_source,true)));
     }
-    parts.join("\n").chars().take(240).collect()
+    let exposed=exposed_http_tooltip_lines(monitor);
+    let visible=exposed.len().min(6);
+    parts.extend(exposed.into_iter().take(visible));
+    if visible>0 {
+        let total=exposed_http_tooltip_lines(monitor).len();
+        if total>visible { parts.push(format!("+{} more",total-visible)); }
+    }
+    parts.join("\n")
 }
 fn topbar_tone(state:&str)->&'static str{match state{"OFFLINE"=>"danger","DEGRADED"=>"warning","ONLINE"=>"accent",_=>"muted"}}
 fn graph_series_for(m:&TargetMonitor,source:&str,history_seconds:u64)->Vec<Value>{
@@ -1856,7 +1880,8 @@ mod tests {
     #[test] fn network_identity_custom_sound_counts_toward_sound_budget(){let mut c=default_config();c.network_identity_change_sound_config=Some(SoundConfig{filename:"test.wav".into(),mime:"audio/wav".into(),data_url:"data:audio/wav;base64,AA==".into(),size_bytes:1024,duration_ms:500});assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_initial_snapshot_is_not_a_change(){let mut first=NetworkIdentity::default();first.public_ip=Some("203.0.113.1".into());assert!(network_identity_change_details(&NetworkIdentity::default(),&first).is_empty());}
     #[test] fn network_identity_change_detects_public_ip_update(){let mut a=NetworkIdentity::default();a.public_ip=Some("203.0.113.1".into());a.updated_at=Some(1);let mut b=a.clone();b.public_ip=Some("203.0.113.2".into());b.updated_at=Some(2);assert_eq!(network_identity_change_details(&a,&b).len(),1);}
-    #[test] fn history_source_uses_human_label(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::new()});let event=target_history_event(monitor,"Alert","http:api.temp","Hot","65".into(),"Triggered",false,false,false,String::new());assert_eq!(event.source_label,"System Info · temp");}
+    #[test] fn history_source_uses_human_label(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::new()});let event=target_history_event(monitor,"Alert","http:api.temp","Hot","65".into(),"Triggered",false,false,false,String::new());assert_eq!(event.source_label,"System Info · temp");}
+    #[test] fn topbar_tooltip_includes_exposed_http_fields_and_missing_values(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:vec!["identity.fwVersion".into(),"identity.hwModel".into()],field_alerts:BTreeMap::new()});monitor.http_results.insert("api".into(),HttpResult{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),status_code:Some(200),response_time_ms:Some(12.0),content_type:"application/json".into(),body:String::new(),fields:BTreeMap::from([("identity.fwVersion".into(),json!("v2.0.03"))]),error:None,timestamp:now_ms()});let tip=surface_tooltip(monitor,"none","none");assert!(tip.contains("System Info · identity.fwVersion: v2.0.03"));assert!(tip.contains("System Info · identity.hwModel: —"));}
     #[test] fn history_query_filters_and_sorts(){let events=vec![
         HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),source_label:"Ping latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
         HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
@@ -2054,7 +2079,7 @@ mod tests {
         let mut c=s.config.clone();
         let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
-        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
+        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
         {
             let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
@@ -2074,7 +2099,7 @@ mod tests {
         let mut c=s.config.clone();
         let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
-        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
+        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
         {
             let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
