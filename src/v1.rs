@@ -442,6 +442,8 @@ struct HistoryEvent {
     target_name: Option<String>,
     event_type: String,
     source: String,
+    #[serde(default)]
+    source_label: String,
     name: String,
     #[serde(default)]
     value: String,
@@ -489,7 +491,7 @@ fn history_id(prefix:&str)->String{format!("{prefix}-{}-{}",now_ms(),std::proces
 fn target_history_event(monitor:&TargetMonitor,event_type:&str,source:&str,name:&str,value:String,status:&str,sound:bool,notification:bool,reminder:bool,details:String)->HistoryEvent{
     HistoryEvent{
         id:history_id("event"),timestamp:now_ms(),target_id:Some(monitor.target.id.clone()),target_name:Some(monitor.target.name.clone()),
-        event_type:event_type.into(),source:source.into(),name:name.into(),value,old_value:String::new(),new_value:String::new(),
+        event_type:event_type.into(),source:source.into(),source_label:source_label(monitor,source),name:name.into(),value,old_value:String::new(),new_value:String::new(),
         status:status.into(),sound,notification,acknowledged:false,reminder,details,
     }
 }
@@ -1008,7 +1010,7 @@ fn handle_network_identity_change(output:&mpsc::Sender<Value>,history:&HistorySt
     let sound=config.network_identity_change_sound;
     let notification=config.network_identity_change_notification;
     record_history(output,history,HistoryEvent{
-        id:history_id("network"),timestamp:now_ms(),target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),
+        id:history_id("network"),timestamp:now_ms(),target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),
         name:"Network Identity changed".into(),value:format!("{} change{}",changes.len(),if changes.len()==1{""}else{"s"}),old_value:String::new(),new_value:String::new(),
         status:"Changed".into(),sound,notification,acknowledged:false,reminder:false,details:details.clone(),
     });
@@ -1054,8 +1056,9 @@ fn save_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut
     history.dirty.store(false,Ordering::Release);
     Ok(())
 }
+fn history_source_text(event:&HistoryEvent)->&str{if event.source_label.is_empty(){&event.source}else{&event.source_label}}
 fn history_text(event:&HistoryEvent)->String{
-    format!("{} {} {} {} {} {} {} {} {}",event.target_name.as_deref().unwrap_or(""),event.event_type,event.source,event.name,event.value,event.old_value,event.new_value,event.status,event.details).to_ascii_lowercase()
+    format!("{} {} {} {} {} {} {} {} {} {}",event.target_name.as_deref().unwrap_or(""),event.event_type,event.source,history_source_text(event),event.name,event.value,event.old_value,event.new_value,event.status,event.details).to_ascii_lowercase()
 }
 fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
     let search=params.get("search").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
@@ -1069,7 +1072,7 @@ fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
         (search.is_empty()||history_text(event).contains(&search))
         &&(target.is_empty()||event.target_id.as_deref()==Some(target))
         &&(event_type.is_empty()||event.event_type==event_type)
-        &&(source.is_empty()||event.source==source)
+        &&(source.is_empty()||history_source_text(event)==source||event.source==source)
         &&(status.is_empty()||event.status==status)
         &&event.timestamp>=from&&event.timestamp<=to
     }).cloned().collect::<Vec<_>>();
@@ -1079,7 +1082,7 @@ fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
         let order=match sort_by{
             "target"=>a.target_name.cmp(&b.target_name),
             "eventType"=>a.event_type.cmp(&b.event_type),
-            "source"=>a.source.cmp(&b.source),
+            "source"=>history_source_text(a).cmp(history_source_text(b)),
             "name"=>a.name.cmp(&b.name),
             "status"=>a.status.cmp(&b.status),
             _=>a.timestamp.cmp(&b.timestamp),
@@ -1090,7 +1093,7 @@ fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
     let mut targets=BTreeSet::new();let mut types=BTreeSet::new();let mut sources=BTreeSet::new();let mut statuses=BTreeSet::new();
     for event in events{
         if let (Some(id),Some(name))=(&event.target_id,&event.target_name){targets.insert((id.clone(),name.clone()));}
-        types.insert(event.event_type.clone());sources.insert(event.source.clone());statuses.insert(event.status.clone());
+        types.insert(event.event_type.clone());sources.insert(history_source_text(event).to_string());statuses.insert(event.status.clone());
     }
     if export_all{
         return json!({"rows":rows,"total":total});
@@ -1485,8 +1488,18 @@ fn main()->Result<(),String>{
     let store=Arc::new(Mutex::new(MonitorStore::new()));
     let mut host_request_id=1u64;
     ensure_config_loaded(&store,&mut input,&output_tx,&mut host_request_id)?;
-    if let Ok(events)=load_history(&mut input,&output_tx,&mut host_request_id){
-        if let Ok(guard)=store.lock(){guard.history.replace(events);}
+    if let Ok(mut events)=load_history(&mut input,&output_tx,&mut host_request_id){
+        if let Ok(guard)=store.lock(){
+            for event in &mut events {
+                if event.source_label.is_empty() {
+                    event.source_label=event.target_id.as_deref()
+                        .and_then(|id|guard.targets.get(id))
+                        .map(|monitor|source_label(monitor,&event.source))
+                        .unwrap_or_else(||event.source.clone());
+                }
+            }
+            guard.history.replace(events);
+        }
     }
     if let Ok(result)=host_request(&mut input,&output_tx,&mut host_request_id,"network.interfaces",json!({})) {
         if let Ok(mut guard)=store.lock() {
@@ -1718,9 +1731,10 @@ mod tests {
     #[test] fn network_identity_custom_sound_counts_toward_sound_budget(){let mut c=default_config();c.network_identity_change_sound_config=Some(SoundConfig{filename:"test.wav".into(),mime:"audio/wav".into(),data_url:"data:audio/wav;base64,AA==".into(),size_bytes:1024,duration_ms:500});assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_initial_snapshot_is_not_a_change(){let mut first=NetworkIdentity::default();first.public_ip=Some("203.0.113.1".into());assert!(network_identity_change_details(&NetworkIdentity::default(),&first).is_empty());}
     #[test] fn network_identity_change_detects_public_ip_update(){let mut a=NetworkIdentity::default();a.public_ip=Some("203.0.113.1".into());a.updated_at=Some(1);let mut b=a.clone();b.public_ip=Some("203.0.113.2".into());b.updated_at=Some(2);assert_eq!(network_identity_change_details(&a,&b).len(),1);}
+    #[test] fn history_source_uses_human_label(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),method:"GET".into(),headers:BTreeMap::new(),body:String::new(),enabled:true,extract_mode:"json".into(),regex:String::new(),detect_changes:false,field_alerts:BTreeMap::new()});let event=target_history_event(monitor,"Alert","http:api.temp","Hot","65".into(),"Triggered",false,false,false,String::new());assert_eq!(event.source_label,"System Info · temp");}
     #[test] fn history_query_filters_and_sorts(){let events=vec![
-        HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
-        HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
+        HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),source_label:"Ping latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
+        HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
     ];let q=history_query(&events,&json!({"eventType":"Alert","page":1,"pageSize":25}),false);assert_eq!(q["total"],1);assert_eq!(q["rows"][0]["id"],"1");}
 
     #[test] fn network_identity_refresh_defaults_are_backward_compatible(){let c=default_config();assert!(c.network_identity_auto_refresh);assert_eq!(c.network_identity_refresh_seconds,300);}
