@@ -42,7 +42,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ### Verification
 
-- Windows Rust validation previously passed with **46 tests and 0 failures**; final count pending the reusable alert delivery update.
+- Windows Rust validation passed with **48 tests and 0 failures** after the reusable alert delivery update.
 - Native History CSV Save As was manually validated, including cancel and successful save.
 - Packaged-plugin smoke test passed against the updated RemoteHand core branch.
 - Manual acceptance confirmed the Target Monitor sidebar icon, live hide/show toggle, and preserved plugin operation while hidden.
