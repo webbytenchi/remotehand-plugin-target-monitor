@@ -6,14 +6,35 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ## 0.7.1 - 2026-09-24
 
+### Added
+
+- Independent Sound and Notification delivery controls for Ping High latency, Offline, and Recovery events.
+- Notification-aware Test actions for Ping alerts, with randomized selection among eligible notification-enabled targets.
+- Restored Network Identity with Public IP, local interface, MAC, IPv4/IPv6, copy, top-bar source, and manual refresh controls.
+- Configurable Network Identity auto refresh with 1, 5, 10, 30, and 60 minute intervals; default 5 minutes.
+- Last-updated timestamp for Network Identity refreshes.
+- Optional Network Identity change sound and native notification delivery; the first snapshot is baseline-only.
+- Persistent unified History for Ping events, reusable alerts, resolutions/reminders, and Network Identity changes.
+- Lazy-loaded, paginated, sortable, searchable, filterable History table.
+- CSV export for the full current filtered/sorted History result set, not only the visible page.
+- Recent per-target History inside Target Reports with a View all history action.
+
+### Changed
+
+- Network Identity meaningful changes are recorded in History independently of whether Sound or Notification delivery is enabled.
+- Successful Network Identity refreshes also refresh its top-bar contribution when values change.
+- Network Identity is visually separated from the core Targets / Alerts / Settings navigation group.
+
 ### Fixed
 
 - Corrected the Ping Alert Sounds master checkbox layout so it no longer inherits the global full-width input style inside RemoteHand.
 - Kept the checkbox left-aligned with its “Enable alert sounds” label across normal and narrow panel layouts.
+- Added spacing between the Network Identity last-updated text and Refresh button.
 
 ### Verification
 
-- Pending Windows packaged-plugin smoke test against RemoteHand v1.2.8.
+- Rust validation currently pending after the unified History and Network Identity change-alert additions.
+- Final Windows packaged-plugin smoke test remains pending against RemoteHand v1.2.8.
 
 ## 0.7.0 - 2026-09-24
 
