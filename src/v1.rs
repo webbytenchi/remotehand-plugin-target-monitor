@@ -969,7 +969,7 @@ fn network_identity_snapshot(identity:&NetworkIdentity)->BTreeMap<String,String>
 fn network_identity_change_details(previous:&NetworkIdentity,next:&NetworkIdentity)->Vec<String>{
     if previous.updated_at.is_none(){return Vec::new();}
     let old=network_identity_snapshot(previous);let new=network_identity_snapshot(next);
-    let mut keys=old.keys().chain(new.keys()).cloned().collect::<BTreeSet<_>>();
+    let keys=old.keys().chain(new.keys()).cloned().collect::<BTreeSet<_>>();
     let mut changes=Vec::new();
     for key in keys.iter(){
         let before=old.get(key).map(String::as_str).unwrap_or("—");
