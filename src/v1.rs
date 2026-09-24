@@ -1187,7 +1187,7 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut
             let notification=monitor.target.show_alert_notifications;
             let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
             emit_rule_notification(output,monitor,rule,source,&current,false);
-            record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Triggered",sound,notification,false,String::new())));
+            record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Triggered",sound,notification,false,String::new()));
         } else if matches {
             let should_remind=rule.reminders_enabled && monitor.last_generic_alert_at.get(&key).map(|last|now.saturating_sub(*last)>=rule.reminder_interval_seconds.saturating_mul(1000)).unwrap_or(true);
             if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();if should_remind{alert.acknowledged=false;}}
@@ -1197,11 +1197,11 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut
                 let notification=monitor.target.show_alert_notifications;
                 let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
                 emit_rule_notification(output,monitor,rule,source,&current,true);
-                record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Reminder",sound,notification,true,String::new())));
+                record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Reminder",sound,notification,true,String::new()));
             }
         } else if monitor.active_alerts.remove(&key).is_some() {
             monitor.last_generic_alert_at.remove(&key);
-            record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Resolved",false,false,false,String::new())));
+            record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Resolved",false,false,false,String::new()));
         } else {
             monitor.last_generic_alert_at.remove(&key);
         }
@@ -1239,7 +1239,7 @@ fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut T
         })});
     }
     if rule.notification_enabled(){emit_legacy_notification(output,monitor,kind,reminder);}
-    record_history(output,history,target_history_event(monitor,"Ping", "ping.latency",label,formatted_source_value(monitor,"ping.latency",true),if reminder{"Reminder"}else if kind=="recovery"{"Recovered"}else{"Triggered"},play_sound,show_notification,reminder,String::new())));
+    record_history(output,history,target_history_event(monitor,"Ping", "ping.latency",label,formatted_source_value(monitor,"ping.latency",true),if reminder{"Reminder"}else if kind=="recovery"{"Recovered"}else{"Triggered"},play_sound,show_notification,reminder,String::new()));
 }
 
 fn source_value(monitor:&TargetMonitor,source:&str)->Value{
