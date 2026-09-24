@@ -36,9 +36,10 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ### Verification
 
-- Windows Rust validation reached 45 passing tests before the sidebar contribution addition; final count pending the latest change.
+- Windows Rust validation passed with **46 tests and 0 failures** after the sidebar contribution addition.
 - Native History CSV Save As was manually validated, including cancel and successful save.
-- Final packaged-plugin smoke test remains pending against the updated RemoteHand core branch.
+- Packaged-plugin smoke test passed against the updated RemoteHand core branch.
+- Manual acceptance confirmed the Target Monitor sidebar icon, live hide/show toggle, and preserved plugin operation while hidden.
 
 ## 0.7.0 - 2026-09-24
 
