@@ -30,7 +30,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 - Windows Rust validation passed with **54 tests and 0 failures** after the card-order persistence update.
 - Optimized Windows validation package built successfully.
 - Manual layout acceptance confirmed the wider, denser target-card grid makes better use of the available panel width.
-- Final drag/reorder persistence smoke test is required before tagging.
+- Manual acceptance confirmed drag/reorder persistence survives a full RemoteHand restart.
 
 ## 0.7.3 - 2026-09-25
 
