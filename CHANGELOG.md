@@ -18,12 +18,15 @@ The format follows Keep a Changelog and Semantic Versioning.
 - Lazy-loaded, paginated, sortable, searchable, filterable History table.
 - CSV export for the full current filtered/sorted History result set, not only the visible page.
 - Recent per-target History inside Target Reports with a View all history action.
+- First-class RemoteHand sidebar contribution with a monitor/pulse icon.
+- A Settings switch to show or hide Target Monitor in the RemoteHand sidebar without disabling the plugin.
 
 ### Changed
 
 - Network Identity meaningful changes are recorded in History independently of whether Sound or Notification delivery is enabled.
 - Successful Network Identity refreshes also refresh its top-bar contribution when values change.
 - Network Identity is visually separated from the core Targets / Alerts / Settings navigation group.
+- Sidebar visibility updates are applied live and preserve RemoteHand's generic contribution ordering.
 
 ### Fixed
 
@@ -33,8 +36,9 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ### Verification
 
-- Rust validation currently pending after the unified History and Network Identity change-alert additions.
-- Final Windows packaged-plugin smoke test remains pending against RemoteHand v1.2.8.
+- Windows Rust validation reached 45 passing tests before the sidebar contribution addition; final count pending the latest change.
+- Native History CSV Save As was manually validated, including cancel and successful save.
+- Final packaged-plugin smoke test remains pending against the updated RemoteHand core branch.
 
 ## 0.7.0 - 2026-09-24
 
