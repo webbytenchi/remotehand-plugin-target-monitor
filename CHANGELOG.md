@@ -10,6 +10,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 - Independent Sound and Notification delivery controls for Ping High latency, Offline, and Recovery events.
 - Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
+- Reusable Alert Rules list now shows Sound/Notification delivery icons and expandable assignment details for “Used by N sources”.
 - Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
 - Notification-aware Test actions for Ping alerts, with randomized selection among eligible notification-enabled targets.
 - Restored Network Identity with Public IP, local interface, MAC, IPv4/IPv6, copy, top-bar source, and manual refresh controls.
