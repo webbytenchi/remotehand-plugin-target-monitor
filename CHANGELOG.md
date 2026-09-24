@@ -10,6 +10,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 - Independent Sound and Notification delivery controls for Ping High latency, Offline, and Recovery events.
 - Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
+- Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
 - Notification-aware Test actions for Ping alerts, with randomized selection among eligible notification-enabled targets.
 - Restored Network Identity with Public IP, local interface, MAC, IPv4/IPv6, copy, top-bar source, and manual refresh controls.
 - Configurable Network Identity auto refresh with 1, 5, 10, 30, and 60 minute intervals; default 5 minutes.
@@ -25,6 +26,8 @@ The format follows Keep a Changelog and Semantic Versioning.
 ### Changed
 
 - Network Identity meaningful changes are recorded in History independently of whether Sound or Notification delivery is enabled.
+- Reusable alert triggers and reminders are recorded in History independently of Sound and Notification delivery settings.
+- Reusable alert delivery controls now follow the same presentation and behavior as Network Identity change delivery.
 - Reusable alert triggers and reminders are recorded in History independently of Sound and Notification delivery settings.
 - Reusable alert delivery controls now follow the same presentation and behavior as Network Identity change delivery.
 - Successful Network Identity refreshes also refresh its top-bar contribution when values change.
