@@ -274,7 +274,10 @@ function formatObservedTime(ms){if(!ms)return"unknown";const d=new Date(Number(m
 function pingOutageContext(r){if(r?.pingState!=="OFFLINE")return"";const parts=[];if(r.offlineSince)parts.push("Offline for "+formatElapsed(r.offlineSince));if(r.lastReachableAt)parts.push("Last reachable "+formatObservedTime(r.lastReachableAt));return parts.join(" · ")}
 
 function applyPanelContext(ctx){
- if(!ctx?.targetId)return;
+ if(!ctx)return;
+ if(ctx.view==="network"){pendingPanelContext=null;selectTab("network");return}
+ if(ctx.view==="history"){pendingPanelContext=null;selectTab("history");return}
+ if(!ctx.targetId)return;
  pendingPanelContext=ctx;
  if(!configTarget(ctx.targetId))return;
  pendingPanelContext=null;
@@ -284,7 +287,7 @@ function applyPanelContext(ctx){
  }
  showTargetsList(ctx.targetId);
 }
-function normalizeStatus(v){if(!v)return;state=v;if(!state.config)state.config={targets:[],alerts:{},alertRules:[]};state.config.alertRules=state.config.alertRules||state.alertRules||[];state.config.alerts=state.config.alerts||state.alerts||{};if(!legacyDraftDirty)legacyDraft=structuredClone(state.config.alerts);render();scheduleNetworkIdentityRefresh();if(pendingPanelContext?.targetId){const ctx=pendingPanelContext;queueMicrotask(()=>applyPanelContext(ctx))}}
+function normalizeStatus(v){if(!v)return;state=v;if(!state.config)state.config={targets:[],alerts:{},alertRules:[]};state.config.alertRules=state.config.alertRules||state.alertRules||[];state.config.alerts=state.config.alerts||state.alerts||{};if(!legacyDraftDirty)legacyDraft=structuredClone(state.config.alerts);render();scheduleNetworkIdentityRefresh();if(pendingPanelContext){const ctx=pendingPanelContext;queueMicrotask(()=>applyPanelContext(ctx))}}
 async function refresh(){try{normalizeStatus(await request("monitor.status"));$("runtime").textContent="LIVE"}catch(e){$("runtime").textContent="ERROR";notice(String(e),"error")}}
 function configTarget(id){return state.config.targets.find(t=>t.id===id)}
 function runtimeTarget(id){return state.targets.find(t=>t.id===id)}
@@ -467,6 +470,14 @@ $("historyExport").onclick=async()=>{
     link.href=url;link.download="target-monitor-history-"+stamp+".csv";document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(`Exported ${rows.length} history row${rows.length===1?"":"s"}.`,"success");
   }catch(e){notice(String(e),"error")}finally{button.disabled=false;button.textContent="Export CSV"}
 };
+async function loadReportHistory(targetId){
+  const root=$("reportRecentHistory");if(!root)return;root.innerHTML='<div class="muted">Loading recent history…</div>';
+  try{
+    const result=await request("monitor.history.query",{targetId,page:1,pageSize:10,sortBy:"timestamp",sortDir:"desc"}),rows=result.rows||[];
+    root.innerHTML=rows.length?`<div class="history-table-wrap"><table class="table history-table report-history-table"><thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Event</th><th>Status</th><th>Delivery</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(historyTime(row.timestamp))}</td><td>${esc(row.eventType||"")}</td><td>${esc(row.source||"")}</td><td>${esc(row.name||"")}</td><td>${esc(row.status||"")}</td><td><div class="history-delivery">${historyDelivery(row)}</div></td></tr>`).join("")}</tbody></table></div><div style="margin-top:8px"><button id="reportViewAllHistory" class="btn" type="button">View all history</button></div>`:'<div class="muted">No history recorded for this target yet.</div>';
+    const button=$("reportViewAllHistory");if(button)button.onclick=()=>{close("reportModal");$("historyTarget").value=targetId;historyState.page=1;selectTab("history")};
+  }catch(e){root.innerHTML=`<div class="muted">${esc(String(e))}</div>`}
+}
 function render(){renderTargets();renderRules();renderSettings();renderNetworkIdentity()}
 function countRuleUses(ruleId){let n=0;for(const t of state.config.targets){for(const c of t.tcpChecks||[])if((c.alertRuleIds||[]).includes(ruleId))n++;for(const h of t.httpChecks||[])for(const ids of Object.values(h.fieldAlerts||{}))if(ids.includes(ruleId))n++}return n}
 async function persist(message="Saved."){try{normalizeStatus(await request("monitor.config.set",state.config));notice(message,"success");return true}catch(e){notice(String(e),"error");await refresh();return false}}
