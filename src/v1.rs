@@ -407,6 +407,8 @@ struct StoredConfig {
     #[serde(default)]
     targets: Vec<MonitorTarget>,
     #[serde(default)]
+    target_card_order: Vec<String>,
+    #[serde(default)]
     monitoring: MonitoringSettings,
     #[serde(default)]
     alerts: LegacyAlertConfig,
@@ -769,7 +771,7 @@ fn default_target() -> MonitorTarget {
 }
 fn default_config() -> StoredConfig {
     StoredConfig {
-        targets: vec![default_target()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
+        targets: vec![default_target()], target_card_order: vec![DEFAULT_TARGET_ID.into()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
         show_in_sidebar: true,
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
         network_identity_auto_refresh: default_network_identity_auto_refresh(),
@@ -888,8 +890,17 @@ fn migrate_legacy_rule_names(config:&mut StoredConfig)->bool{
     }
     changed
 }
+fn normalize_target_card_order(config: &mut StoredConfig) {
+    let valid=config.targets.iter().map(|target|target.id.clone()).collect::<BTreeSet<_>>();
+    let mut seen=BTreeSet::new();
+    config.target_card_order.retain(|id| valid.contains(id)&&seen.insert(id.clone()));
+    for target in &config.targets {
+        if seen.insert(target.id.clone()) { config.target_card_order.push(target.id.clone()); }
+    }
+}
 fn normalize_config(mut config: StoredConfig) -> Result<StoredConfig, String> {
     if config.targets.is_empty() { config.targets.push(default_target()); }
+    normalize_target_card_order(&mut config);
     validate_config(&config)?;
     Ok(config)
 }
@@ -1938,7 +1949,15 @@ mod tests {
     #[test] fn config_rejects_invalid_monitoring_windows(){let mut c=default_config();c.monitoring.http_interval_seconds=0;assert!(validate_config(&c).is_err());c=default_config();c.monitoring.topbar_history_seconds=5;assert!(validate_config(&c).is_err());}
     #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
     #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert!(c.show_in_sidebar);assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
-    #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
+    #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);assert_eq!(c.target_card_order,vec![c.targets[0].id.clone()]);}
+    #[test] fn target_card_order_is_backward_compatible_and_normalized(){
+        let mut c=default_config();
+        let mut second=default_target();second.id="second".into();second.name="Second".into();second.address="127.0.0.2".into();
+        c.targets.push(second);
+        c.target_card_order=vec!["missing".into(),DEFAULT_TARGET_ID.into(),DEFAULT_TARGET_ID.into()];
+        let normalized=normalize_config(c).unwrap();
+        assert_eq!(normalized.target_card_order,vec![DEFAULT_TARGET_ID.to_string(),"second".to_string()]);
+    }
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
     #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
