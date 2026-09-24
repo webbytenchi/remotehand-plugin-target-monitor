@@ -205,6 +205,10 @@ struct GenericAlertRule {
     operator: String,
     #[serde(default)]
     value: Option<Value>,
+    #[serde(default = "default_true")]
+    sound_enabled: bool,
+    #[serde(default = "default_true")]
+    notification_enabled: bool,
     #[serde(default)]
     sound: Option<SoundConfig>,
     #[serde(default)]
@@ -1202,20 +1206,24 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut
             let alert=ActiveAlert{key:key.clone(),target_id:monitor.target.id.clone(),rule_id:rule.id.clone(),rule_name:rule.name.clone(),source:source.into(),current_value:current.clone(),since:now,acknowledged:false};
             monitor.active_alerts.insert(key.clone(),alert.clone());
             monitor.last_generic_alert_at.insert(key.clone(),now);
-            let sound=true;
-            let notification=monitor.target.show_alert_notifications;
-            let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
-            emit_rule_notification(output,monitor,rule,source,&current,false);
+            let sound=rule.sound_enabled;
+            let notification=rule.notification_enabled && monitor.target.show_alert_notifications;
+            if sound {
+                let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+            }
+            if rule.notification_enabled { emit_rule_notification(output,monitor,rule,source,&current,false); }
             record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Triggered",sound,notification,false,String::new()));
         } else if matches {
             let should_remind=rule.reminders_enabled && monitor.last_generic_alert_at.get(&key).map(|last|now.saturating_sub(*last)>=rule.reminder_interval_seconds.saturating_mul(1000)).unwrap_or(true);
             if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();if should_remind{alert.acknowledged=false;}}
             if should_remind {
                 monitor.last_generic_alert_at.insert(key.clone(),now);
-                let sound=true;
-                let notification=monitor.target.show_alert_notifications;
-                let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
-                emit_rule_notification(output,monitor,rule,source,&current,true);
+                let sound=rule.sound_enabled;
+                let notification=rule.notification_enabled && monitor.target.show_alert_notifications;
+                if sound {
+                    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+                }
+                if rule.notification_enabled { emit_rule_notification(output,monitor,rule,source,&current,true); }
                 record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Reminder",sound,notification,true,String::new()));
             }
         } else if monitor.active_alerts.remove(&key).is_some() {
@@ -1391,6 +1399,15 @@ fn emit_legacy_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,k
         _=>return
     };
     emit_native_notification(output,monitor,format!("{} · {}",monitor.target.name,label),body,tone);
+}
+fn emit_rule_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,rule_name:&str){
+    emit_native_notification(
+        output,
+        monitor,
+        format!("{} · {} · Test",monitor.target.name,rule_name),
+        "Reusable alert rule test notification".to_string(),
+        "warning",
+    );
 }
 fn emit_legacy_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,kind:&str){
     let (label,tone)=match kind{
@@ -1742,6 +1759,31 @@ fn main()->Result<(),String>{
                 });
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notify}),error:String::new()}
             }
+            "monitor.rule.test"=>{
+                let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
+                let rule_name=request.params.get("ruleName").and_then(Value::as_str).unwrap_or("Reusable alert");
+                let sound=request.params.get("sound").and_then(Value::as_bool).unwrap_or(false);
+                let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                let monitor=guard.targets.get(target_id);
+                let notified=notify && monitor.map(|m|m.target.show_alert_notifications).unwrap_or(false);
+                if notified {
+                    if let Some(monitor)=monitor { emit_rule_test_notification(&output_tx,monitor,rule_name); }
+                }
+                let (target_id_value,target_name_value)=match monitor {
+                    Some(monitor)=>(Some(monitor.target.id.clone()),Some(monitor.target.name.clone())),
+                    None=>(None,None),
+                };
+                let history=guard.history.clone();
+                drop(guard);
+                record_history(&output_tx,&history,HistoryEvent{
+                    id:history_id("test"),timestamp:now_ms(),target_id:target_id_value,target_name:target_name_value,event_type:"Test".into(),
+                    source:"reusable.alert".into(),source_label:"Reusable alerts".into(),name:format!("{rule_name} test"),
+                    value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),
+                    sound,notification:notified,acknowledged:false,reminder:false,details:"User-triggered test".into(),
+                });
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notified}),error:String::new()}
+            }
             "monitor.alert.test"=>{
                 let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
                 let kind=request.params.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -1811,11 +1853,12 @@ mod tests {
     #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
-    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn reusable_alert_delivery_defaults_on_for_backward_compatibility(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(rule.sound_enabled);assert!(rule.notification_enabled);}
     #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
     #[test] fn legacy_alert_channel_flags_fall_back_to_old_enabled_field(){let enabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":true,"cooldownSeconds":60,"sound":null})).unwrap();assert!(enabled.sound_enabled());assert!(enabled.notification_enabled());let disabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(!disabled.sound_enabled());assert!(!disabled.notification_enabled());}
     #[test] fn legacy_alert_channel_flags_can_be_independent(){let rule:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"soundEnabled":true,"notificationEnabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(rule.sound_enabled());assert!(!rule.notification_enabled());}
-    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
+    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn source_formatting_applies_to_display_without_changing_raw_value(){
         let mut s=MonitorStore::new();
@@ -1984,7 +2027,7 @@ mod tests {
     #[test] fn replace_config_prunes_active_alert_when_rule_is_deleted(){
         let mut s=MonitorStore::new();
         let mut c=s.config.clone();
-        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
         c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
@@ -2004,7 +2047,7 @@ mod tests {
     #[test] fn replace_config_prunes_active_alert_when_source_is_unassigned(){
         let mut s=MonitorStore::new();
         let mut c=s.config.clone();
-        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
         c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
