@@ -29,6 +29,8 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - lazy-loaded, sortable, filterable, paginated History with CSV export
 - restored Network Identity with configurable auto refresh and change alerts
 - per-target system-tray graph contributions
+- runtime RemoteHand sidebar visibility control
+- independent Sound and Notification delivery controls for Ping and reusable alerts
 
 See `V0.7.0-DESIGN.md` for the delivered product model.
 
@@ -337,6 +339,8 @@ RemoteHand provides generic facilities such as:
 - native plugin notification delivery
 - top-bar contribution primitives
 - panel hosting and navigation
+- native file-save dialogs
+- runtime sidebar contribution visibility
 
 Target Monitor owns:
 
@@ -349,6 +353,9 @@ Target Monitor owns:
 - alert rules and state
 - alert sounds/reminders
 - target reports
+- Network Identity behavior and change detection
+- persistent operational History and CSV presentation
+- sidebar visibility preference
 - monitoring presentation
 
 Device-specific monitoring logic should not be added to RemoteHand core.
