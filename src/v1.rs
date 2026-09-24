@@ -1706,22 +1706,48 @@ fn main()->Result<(),String>{
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"acknowledged":true}),error:String::new()}
             }
             "monitor.network.identity.test"=>{
+                let sound=request.params.get("sound").and_then(Value::as_bool).unwrap_or(false);
                 let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
                 if notify{emit_network_identity_test_notification(&output_tx);}
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                record_history(&output_tx,&history,HistoryEvent{
+                    id:history_id("test"),timestamp:now_ms(),target_id:None,target_name:None,event_type:"Test".into(),
+                    source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity alert test".into(),
+                    value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),
+                    sound,notification:notify,acknowledged:false,reminder:false,details:"User-triggered test".into(),
+                });
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notify}),error:String::new()}
             }
             "monitor.alert.test"=>{
                 let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
                 let kind=request.params.get("kind").and_then(Value::as_str).unwrap_or("");
+                let sound=request.params.get("sound").and_then(Value::as_bool).unwrap_or(false);
+                let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
                 let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
-                match guard.targets.get(target_id){
-                    Some(monitor) if monitor.target.show_alert_notifications=>{
-                        emit_legacy_test_notification(&output_tx,monitor,kind);
-                        PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":true}),error:String::new()}
-                    }
-                    Some(_)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":false}),error:String::new()},
-                    None=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"target not found".into()}
+                let monitor=guard.targets.get(target_id);
+                let notified=notify && monitor.map(|m|m.target.show_alert_notifications).unwrap_or(false);
+                if notified {
+                    if let Some(monitor)=monitor { emit_legacy_test_notification(&output_tx,monitor,kind); }
                 }
+                let (label,target_id_value,target_name_value)=match monitor {
+                    Some(monitor)=>{
+                        let label=match kind{"highLatency"=>"High latency","offline"=>"Offline","recovery"=>"Recovery",_=>"Ping alert"};
+                        (label.to_string(),Some(monitor.target.id.clone()),Some(monitor.target.name.clone()))
+                    }
+                    None=>{
+                        let label=match kind{"highLatency"=>"High latency","offline"=>"Offline","recovery"=>"Recovery",_=>"Ping alert"};
+                        (label.to_string(),None,None)
+                    }
+                };
+                let history=guard.history.clone();
+                drop(guard);
+                record_history(&output_tx,&history,HistoryEvent{
+                    id:history_id("test"),timestamp:now_ms(),target_id:target_id_value,target_name:target_name_value,event_type:"Test".into(),
+                    source:"ping.alert".into(),source_label:"Ping alerts".into(),name:format!("{label} test"),
+                    value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),
+                    sound,notification:notified,acknowledged:false,reminder:false,details:"User-triggered test".into(),
+                });
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notified}),error:String::new()}
             }
             "monitor.shutdown"=>{
                 let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
@@ -1814,6 +1840,10 @@ mod tests {
         let tooltip=topbar["items"][0]["tooltip"].as_str().unwrap();
         assert!(tooltip.contains("Value: Ping latency = 12.0 ms"));
         assert!(tooltip.contains("Graph: Ping latency · last 12.0 ms"));
+    }
+    #[test] fn test_history_events_are_identifiable(){
+        let event=HistoryEvent{id:"x".into(),timestamp:1,target_id:None,target_name:None,event_type:"Test".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity alert test".into(),value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:"User-triggered test".into()};
+        assert_eq!(event.event_type,"Test");assert_eq!(event.status,"Test");assert!(event.sound);assert!(event.notification);
     }
     #[test] fn network_identity_notification_keeps_hidden_tray_handle(){
         let mut s=MonitorStore::new();
