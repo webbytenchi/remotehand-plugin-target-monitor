@@ -475,7 +475,7 @@ async function loadReportHistory(targetId){
   try{
     const result=await request("monitor.history.query",{targetId,page:1,pageSize:10,sortBy:"timestamp",sortDir:"desc"}),rows=result.rows||[];
     root.innerHTML=rows.length?`<div class="history-table-wrap"><table class="table history-table report-history-table"><thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Event</th><th>Status</th><th>Delivery</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(historyTime(row.timestamp))}</td><td>${esc(row.eventType||"")}</td><td>${esc(row.source||"")}</td><td>${esc(row.name||"")}</td><td>${esc(row.status||"")}</td><td><div class="history-delivery">${historyDelivery(row)}</div></td></tr>`).join("")}</tbody></table></div><div style="margin-top:8px"><button id="reportViewAllHistory" class="btn" type="button">View all history</button></div>`:'<div class="muted">No history recorded for this target yet.</div>';
-    const button=$("reportViewAllHistory");if(button)button.onclick=()=>{close("reportModal");$("historyTarget").value=targetId;historyState.page=1;selectTab("history")};
+    const button=$("reportViewAllHistory");if(button)button.onclick=()=>{close("reportModal");const select=$("historyTarget"),target=configTarget(targetId);if(![...select.options].some(option=>option.value===targetId))select.add(new Option(target?.name||targetId,targetId));select.value=targetId;historyState.page=1;selectTab("history")};
   }catch(e){root.innerHTML=`<div class="muted">${esc(String(e))}</div>`}
 }
 function render(){renderTargets();renderRules();renderSettings();renderNetworkIdentity()}
@@ -735,6 +735,6 @@ window.addEventListener("message",e=>{const ctx=e.data?.type==="remotehand.plugi
 window.addEventListener("remotehand-plugin-context",e=>{const ctx=e.detail;if(ctx)applyPanelContext(ctx)});
 if(bridge?.onEvent){bridge.onEvent("monitor.ready",normalizeStatus);bridge.onEvent("monitor.sampled",payload=>{const i=state.targets.findIndex(x=>x.id===payload.id);if(i>=0)state.targets[i]=payload;else state.targets.push(payload);renderTargets();if(detailTargetId===payload.id&&$("reportModal").classList.contains("open"))refreshReportLive(payload.id)});bridge.onEvent("monitor.alert",p=>{notice(p.alertType==="networkIdentityChanged"?"Network Identity changed":`Alert: ${p.ruleName||p.alertType} · ${p.targetName||""}`,"warning");if(p.playSound!==false)playAlert(p);if($("historyPanel").classList.contains("active"))void loadHistory(true)})}
 async function playAlert(p){try{if(p.sound?.dataUrl){await new Audio(p.sound.dataUrl).play();return}const C=window.AudioContext||window.webkitAudioContext;if(!C)return;const c=new C(),o=c.createOscillator(),g=c.createGain();o.frequency.value=880;g.gain.value=.12;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+.7)}catch{}}
-selectTab("targets");refresh();setInterval(()=>{if(document.visibilityState!=="hidden")refresh()},5000);
+selectTab("targets");refresh();setInterval(()=>{if(document.visibilityState!=="hidden"){refresh();if($("historyPanel").classList.contains("active"))void loadHistory(true)}},5000);
 })();
 </script></body></html>
