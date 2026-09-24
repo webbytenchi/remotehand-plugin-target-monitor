@@ -816,10 +816,12 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     }
     let mut target_ids = BTreeSet::new();
     let mut rule_ids = BTreeSet::new();
+    let mut rule_names = BTreeSet::new();
     let mut sound_total = 0u64;
     for rule in &config.alert_rules {
         if rule.id.trim().is_empty() || !rule_ids.insert(rule.id.clone()) { return Err("alert rule ids must be unique and non-empty".into()); }
         if rule.name.trim().is_empty() || rule.name.len() > 128 { return Err("alert rule name is missing or too long".into()); }
+        if !rule_names.insert(rule.name.trim().to_lowercase()) { return Err(format!("alert rule name must be unique: {}", rule.name)); }
         if !matches!(rule.operator.as_str(), ">="|"<="|"="|"equals"|"changed") { return Err(format!("unsupported alert operator: {}", rule.operator)); }
         if rule.operator != "changed" && rule.value.is_none() { return Err(format!("alert rule {} requires a comparison value", rule.name)); }
         if rule.reminder_interval_seconds < 5 || rule.reminder_interval_seconds > 86400 { return Err(format!("alert rule {} reminder interval must be 5-86400 seconds", rule.name)); }
@@ -865,6 +867,22 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
         }
     }
     Ok(())
+}
+fn migrate_legacy_rule_names(config:&mut StoredConfig)->bool{
+    let mut used=BTreeSet::new();
+    let mut changed=false;
+    for rule in &mut config.alert_rules {
+        let base=rule.name.trim().to_string();
+        let mut candidate=base.clone();
+        let mut suffix=2usize;
+        while used.contains(&candidate.to_lowercase()) {
+            candidate=format!("{base} ({suffix})");
+            suffix+=1;
+        }
+        if candidate!=rule.name { rule.name=candidate.clone(); changed=true; }
+        used.insert(candidate.to_lowercase());
+    }
+    changed
 }
 fn normalize_config(mut config: StoredConfig) -> Result<StoredConfig, String> {
     if config.targets.is_empty() { config.targets.push(default_target()); }
@@ -1049,7 +1067,11 @@ fn save_config(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut 
     host_request(input,output,request_id,"storage.set",json!({"key":STORAGE_KEY,"value":config}))?; Ok(())
 }
 fn ensure_config_loaded(store:&Arc<Mutex<MonitorStore>>,input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<(),String>{
-    let config=match load_config(input,output,request_id)? { Some(c)=>normalize_config(c)?, None=>default_config() };
+    let (config,migrated)=match load_config(input,output,request_id)? {
+        Some(mut c)=>{let migrated=migrate_legacy_rule_names(&mut c);(normalize_config(c)?,migrated)},
+        None=>(default_config(),false)
+    };
+    if migrated { save_config(input,output,request_id,&config)?; }
     store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.replace_config(config); Ok(())
 }
 fn load_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<Vec<HistoryEvent>,String>{
@@ -1854,6 +1876,8 @@ mod tests {
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
     #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn reusable_alert_names_must_be_unique_case_insensitively(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();b.name="hightemp".into();c.alert_rules=vec![a,b];assert!(validate_config(&c).is_err());}
+    #[test] fn legacy_duplicate_reusable_alert_names_are_migrated(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();c.alert_rules=vec![a,b];assert!(migrate_legacy_rule_names(&mut c));assert_eq!(c.alert_rules[0].name,"HighTemp");assert_eq!(c.alert_rules[1].name,"HighTemp (2)");assert!(validate_config(&c).is_ok());}
     #[test] fn reusable_alert_delivery_defaults_on_for_backward_compatibility(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(rule.sound_enabled);assert!(rule.notification_enabled);}
     #[test] fn reusable_alert_delivery_channels_can_be_disabled_independently(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"soundEnabled":false,"notificationEnabled":true,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.sound_enabled);assert!(rule.notification_enabled);}
     #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
