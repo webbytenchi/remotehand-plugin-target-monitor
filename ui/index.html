@@ -96,6 +96,36 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
     <p class="muted">When auto refresh is off, Network Identity is still loaded once at RemoteHand startup and can be refreshed manually. Network Identity uses RemoteHand's generic network interface API. Public IP is resolved separately by Target Monitor.</p>
   </div>
 </section>
+<section id="historyPanel" class="panel">
+  <div class="section-title"><h2>History</h2><div class="spacer"></div><button id="historyExport" class="btn" type="button">Export CSV</button></div>
+  <div class="card">
+    <div class="history-toolbar">
+      <div class="field"><label>Search</label><input id="historySearch" type="search" placeholder="Search events, targets, values…"></div>
+      <div class="field"><label>Target</label><select id="historyTarget"><option value="">All targets</option></select></div>
+      <div class="field"><label>Type</label><select id="historyType"><option value="">All types</option></select></div>
+      <div class="field"><label>Source</label><select id="historySource"><option value="">All sources</option></select></div>
+      <div class="field"><label>Status</label><select id="historyStatus"><option value="">All statuses</option></select></div>
+      <button id="historyClear" class="btn" type="button">Clear filters</button>
+    </div>
+    <div class="history-filter-dates">
+      <div class="field"><label>From</label><input id="historyFrom" type="datetime-local"></div>
+      <div class="field"><label>To</label><input id="historyTo" type="datetime-local"></div>
+    </div>
+    <div class="history-table-wrap">
+      <table class="table history-table">
+        <thead><tr><th data-history-sort="timestamp">Time</th><th data-history-sort="target">Target</th><th data-history-sort="eventType">Type</th><th data-history-sort="source">Source</th><th data-history-sort="name">Event</th><th>Value</th><th data-history-sort="status">Status</th><th class="no-sort">Delivery</th><th class="no-sort">Details</th></tr></thead>
+        <tbody id="historyBody"><tr><td colspan="9" class="history-empty">History loads when this tab is opened.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="history-pager">
+      <button id="historyPrev" class="btn" type="button">Previous</button>
+      <span id="historyPageInfo" class="muted">Page 1</span>
+      <button id="historyNext" class="btn" type="button">Next</button>
+      <div class="spacer"></div>
+      <div class="field"><label>Rows</label><select id="historyPageSize"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></div>
+    </div>
+  </div>
+</section>
 </div>
 
 <div id="reportModal" class="modal-backdrop"><div class="modal report-modal">
