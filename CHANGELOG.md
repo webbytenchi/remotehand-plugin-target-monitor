@@ -17,6 +17,13 @@ The format follows Keep a Changelog and Semantic Versioning.
 - No saved configuration migration is required.
 - Monitoring, alerts, reports, top-bar content, and exposed HTTP field semantics are unchanged.
 
+### Verification
+
+- Windows Rust validation passed with **53 tests and 0 failures**.
+- Optimized Windows plugin package built successfully.
+- Validation ZIP installed successfully through RemoteHand's native **Install ZIP** flow.
+- Manual acceptance confirmed the system-tray graph continues updating past the previous approximately four-bar freeze point.
+
 ## 0.7.2 - 2026-09-24
 
 ### Added
