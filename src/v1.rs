@@ -998,7 +998,7 @@ fn emit_network_identity_notification(output:&mpsc::Sender<Value>,details:&str){
 }
 fn emit_network_identity_test_notification(output:&mpsc::Sender<Value>){
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
-        "itemId":"network-identity-test","title":"Network Identity · Test","body":"Target Monitor test notification",
+        "itemId":"network-identity","title":"Network Identity · Test","body":"Target Monitor test notification",
         "tone":"warning","silent":true,"action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
     })});
 }
@@ -1462,11 +1462,22 @@ fn topbar_value(store:&MonitorStore)->Value{
     json!({"items":items})
 }
 fn tray_value(store:&MonitorStore)->Value{
-    let items=store.targets.values().filter(|m|m.target.show_in_system_tray||m.target.show_alert_notifications).map(|m|{
+    let mut items=store.targets.values().filter(|m|m.target.show_in_system_tray||m.target.show_alert_notifications).map(|m|{
         let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
         let series=graph_series_for(m,source,store.config.monitoring.topbar_history_seconds);
         json!({"id":m.target.id,"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,source),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled&&m.target.show_in_system_tray,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
+    if store.config.network_identity_change_notification {
+        items.push(json!({
+            "id":"network-identity",
+            "title":"Network Identity",
+            "tooltip":"Network Identity notifications",
+            "tone":"info",
+            "visible":false,
+            "series":[],
+            "action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
+        }));
+    }
     json!({"items":items})
 }
 fn emit_surfaces(output:&mpsc::Sender<Value>,store:&MonitorStore)->Result<(),String>{
@@ -1803,6 +1814,14 @@ mod tests {
         let tooltip=topbar["items"][0]["tooltip"].as_str().unwrap();
         assert!(tooltip.contains("Value: Ping latency = 12.0 ms"));
         assert!(tooltip.contains("Graph: Ping latency · last 12.0 ms"));
+    }
+    #[test] fn network_identity_notification_keeps_hidden_tray_handle(){
+        let mut s=MonitorStore::new();
+        s.config.network_identity_change_notification=true;
+        let tray=tray_value(&s);
+        let item=tray["items"].as_array().unwrap().iter().find(|item|item["id"]=="network-identity").unwrap();
+        assert_eq!(item["visible"],json!(false));
+        assert_eq!(item["action"]["context"]["view"],json!("network"));
     }
     #[test] fn notification_enabled_target_keeps_hidden_tray_handle(){
         let mut s=MonitorStore::new();
