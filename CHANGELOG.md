@@ -9,6 +9,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 ### Added
 
 - Independent Sound and Notification delivery controls for Ping High latency, Offline, and Recovery events.
+- Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
 - Notification-aware Test actions for Ping alerts, with randomized selection among eligible notification-enabled targets.
 - Restored Network Identity with Public IP, local interface, MAC, IPv4/IPv6, copy, top-bar source, and manual refresh controls.
 - Configurable Network Identity auto refresh with 1, 5, 10, 30, and 60 minute intervals; default 5 minutes.
@@ -24,6 +25,8 @@ The format follows Keep a Changelog and Semantic Versioning.
 ### Changed
 
 - Network Identity meaningful changes are recorded in History independently of whether Sound or Notification delivery is enabled.
+- Reusable alert triggers and reminders are recorded in History independently of Sound and Notification delivery settings.
+- Reusable alert delivery controls now follow the same presentation and behavior as Network Identity change delivery.
 - Successful Network Identity refreshes also refresh its top-bar contribution when values change.
 - Network Identity is visually separated from the core Targets / Alerts / Settings navigation group.
 - Sidebar visibility updates are applied live and preserve RemoteHand's generic contribution ordering.
@@ -36,7 +39,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ### Verification
 
-- Windows Rust validation passed with **46 tests and 0 failures** after the sidebar contribution addition.
+- Windows Rust validation previously passed with **46 tests and 0 failures**; final count pending the reusable alert delivery update.
 - Native History CSV Save As was manually validated, including cancel and successful save.
 - Packaged-plugin smoke test passed against the updated RemoteHand core branch.
 - Manual acceptance confirmed the Target Monitor sidebar icon, live hide/show toggle, and preserved plugin operation while hidden.
