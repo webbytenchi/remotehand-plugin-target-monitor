@@ -328,16 +328,13 @@ async function testLegacyAlert(k){
     await playAlert({sound:r.sound||null});
     soundPlayed=true;
   }
-  if(r.notificationEnabled!==false){
-    const eligibleTargets=(state.config.targets||[]).filter(t=>t.showAlertNotifications);
-    const target=eligibleTargets.length?eligibleTargets[Math.floor(Math.random()*eligibleTargets.length)]:null;
-    if(target){
-      try{
-        const result=await request("monitor.alert.test",{targetId:target.id,kind:k});
-        notificationShown=result?.notified!==false;
-      }catch{}
-    }
-  }
+  const notificationRequested=r.notificationEnabled!==false;
+  const eligibleTargets=notificationRequested?(state.config.targets||[]).filter(t=>t.showAlertNotifications):[];
+  const target=eligibleTargets.length?eligibleTargets[Math.floor(Math.random()*eligibleTargets.length)]:null;
+  try{
+    const result=await request("monitor.alert.test",{targetId:target?.id||"",kind:k,sound:soundPlayed,notification:notificationRequested});
+    notificationShown=result?.notified===true;
+  }catch{}
   if(soundPlayed&&notificationShown)return notice(r.sound?"Test sound and notification sent.":"Test beep and notification sent.","info");
   if(soundPlayed)return notice(r.sound?"Test sound played.":"Test beep played.","info");
   if(notificationShown)return notice("Test notification sent.","info");
@@ -452,7 +449,10 @@ $("networkIdentityAlertTest").onclick=async()=>{
   const soundEnabled=state.config.networkIdentityChangeSound===true,notificationEnabled=state.config.networkIdentityChangeNotification===true;
   let soundPlayed=false,notificationShown=false;
   if(soundEnabled){await playAlert({sound:state.config.networkIdentityChangeSoundConfig||null});soundPlayed=true}
-  if(notificationEnabled){try{const result=await request("monitor.network.identity.test",{notification:true});notificationShown=result?.notified!==false}catch{}}
+  try{
+    const result=await request("monitor.network.identity.test",{sound:soundPlayed,notification:notificationEnabled});
+    notificationShown=result?.notified===true;
+  }catch{}
   if(soundPlayed&&notificationShown)return notice(state.config.networkIdentityChangeSoundConfig?"Network Identity test sound and notification sent.":"Network Identity test beep and notification sent.","info");
   if(soundPlayed)return notice(state.config.networkIdentityChangeSoundConfig?"Network Identity test sound played.":"Network Identity test beep played.","info");
   if(notificationShown)return notice("Network Identity test notification sent.","info");
