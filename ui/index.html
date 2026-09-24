@@ -237,7 +237,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
 <script>
 (()=>{"use strict";
 const $=id=>document.getElementById(id), bridge=window.remotehand;let requestChain=Promise.resolve();const request=(method,params={})=>{if(!bridge?.request)return Promise.reject(new Error("plugin bridge unavailable"));const run=()=>bridge.request(method,params);const p=requestChain.then(run,run);requestChain=p.catch(()=>{});return p};
-let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},offline:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},recovery:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null}},alertRules:[]},targets:[]};let editingTarget=null,editingRule=null,editingHttp=null,targetDraft=null,httpPreviewFields=[],httpPreviewPage=1,httpPreviewPageSize=5,detailTargetId=null,contextTargetId=null,editingAlertField=null,reportHttpFilters={},pendingDeleteRuleId=null,legacyDraft=null,legacyDraftDirty=false,settingsDirty=false,graphThresholdSource="",sourceFormatSource="",networkIdentityRefreshTimer=null,networkIdentityRefreshTimerSeconds=0,networkIdentityRefreshing=false;let pendingPanelContext=window.__REMOTEHAND_PLUGIN_CONTEXT__||null;
+let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},offline:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},recovery:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null}},alertRules:[]},targets:[]};let editingTarget=null,editingRule=null,editingHttp=null,targetDraft=null,httpPreviewFields=[],httpPreviewPage=1,httpPreviewPageSize=5,detailTargetId=null,contextTargetId=null,editingAlertField=null,reportHttpFilters={},pendingDeleteRuleId=null,legacyDraft=null,legacyDraftDirty=false,settingsDirty=false,graphThresholdSource="",sourceFormatSource="",networkIdentityRefreshTimer=null,networkIdentityRefreshTimerSeconds=0,networkIdentityRefreshing=false,historyLoaded=false,historyLoading=false,historyState={page:1,pageSize:25,total:0,sortBy:"timestamp",sortDir:"desc",facets:{targets:[],eventTypes:[],sources:[],statuses:[]}};let pendingPanelContext=window.__REMOTEHAND_PLUGIN_CONTEXT__||null;
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id=prefix=>prefix+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,8);
 const notice=(m,kind="info")=>{if(kind===true)kind="error";const e=$("notice");$("noticeText").textContent=m||"";e.className="notice"+(kind&&kind!=="info"?" "+kind:"");e.hidden=!m};$("noticeClose").onclick=()=>{const e=$("notice");$("noticeText").textContent="";e.hidden=true};
@@ -266,7 +266,7 @@ document.addEventListener("keydown",e=>{
   const ranked=openModals.map((el,index)=>({el,index,z:Number.parseInt(getComputedStyle(el).zIndex,10)||0})).sort((a,b)=>a.z-b.z||a.index-b.index);
   cancelModal(ranked[ranked.length-1].el.id);
 });
-function selectTab(name){document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===name));["targets","alerts","settings","network"].forEach(n=>$(n+"Panel").classList.toggle("active",n===name));if(name==="network"&&!state.networkIdentity?.interfaces?.length)void refreshNetworkIdentity()}
+function selectTab(name){document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===name));["targets","alerts","settings","network","history"].forEach(n=>$(n+"Panel").classList.toggle("active",n===name));if(name==="network"&&!state.networkIdentity?.interfaces?.length)void refreshNetworkIdentity();if(name==="history")void loadHistory(true)}
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>selectTab(b.dataset.tab));
 const stateClass=s=>String(s||"").toLowerCase().replace(/\s+/g,"-");
 function formatElapsed(ms){const seconds=Math.max(0,Math.floor((Date.now()-Number(ms||0))/1000));if(seconds<60)return seconds+" sec";const minutes=Math.floor(seconds/60);if(minutes<60)return minutes+" min";const hours=Math.floor(minutes/60);if(hours<24)return hours+" hr "+(minutes%60)+" min";const days=Math.floor(hours/24);return days+" d "+(hours%24)+" hr"}
@@ -378,6 +378,8 @@ function renderNetworkIdentity(){
   $("networkIdentityAutoRefresh").checked=state.config.networkIdentityAutoRefresh!==false;
   $("networkIdentityRefreshSeconds").value=String(state.config.networkIdentityRefreshSeconds||300);
   $("networkIdentityRefreshSeconds").disabled=state.config.networkIdentityAutoRefresh===false;
+  $("networkIdentityChangeSound").checked=state.config.networkIdentityChangeSound===true;
+  $("networkIdentityChangeNotification").checked=state.config.networkIdentityChangeNotification===true;
   if(!networkIdentityRefreshing)$("networkIdentityStatus").textContent=identity.publicIpError&&!identity.publicIp?"Public IP unavailable · "+formatNetworkIdentityUpdatedAt(identity.updatedAt):formatNetworkIdentityUpdatedAt(identity.updatedAt);
 }
 function scheduleNetworkIdentityRefresh(){
@@ -414,6 +416,8 @@ $("showNetworkIdentityTopbar").onchange=async()=>{state.config.showNetworkIdenti
 $("networkIdentityTopbarSource").onchange=async()=>{state.config.networkIdentityTopbarSource=$("networkIdentityTopbarSource").value;await persist("Network Identity top-bar address saved.");renderNetworkIdentity()};
 $("networkIdentityAutoRefresh").onchange=async()=>{state.config.networkIdentityAutoRefresh=$("networkIdentityAutoRefresh").checked;const ok=await persist("Network Identity refresh setting saved.");if(ok)scheduleNetworkIdentityRefresh();renderNetworkIdentity()};
 $("networkIdentityRefreshSeconds").onchange=async()=>{state.config.networkIdentityRefreshSeconds=Number($("networkIdentityRefreshSeconds").value);const ok=await persist("Network Identity refresh interval saved.");if(ok)scheduleNetworkIdentityRefresh();renderNetworkIdentity()};
+$("networkIdentityChangeSound").onchange=async()=>{state.config.networkIdentityChangeSound=$("networkIdentityChangeSound").checked;await persist("Network Identity sound setting saved.");renderNetworkIdentity()};
+$("networkIdentityChangeNotification").onchange=async()=>{state.config.networkIdentityChangeNotification=$("networkIdentityChangeNotification").checked;await persist("Network Identity notification setting saved.");renderNetworkIdentity()};
 function render(){renderTargets();renderRules();renderSettings();renderNetworkIdentity()}
 function countRuleUses(ruleId){let n=0;for(const t of state.config.targets){for(const c of t.tcpChecks||[])if((c.alertRuleIds||[]).includes(ruleId))n++;for(const h of t.httpChecks||[])for(const ids of Object.values(h.fieldAlerts||{}))if(ids.includes(ruleId))n++}return n}
 async function persist(message="Saved."){try{normalizeStatus(await request("monitor.config.set",state.config));notice(message,"success");return true}catch(e){notice(String(e),"error");await refresh();return false}}
