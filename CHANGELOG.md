@@ -4,6 +4,34 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.4 - 2026-09-25
+
+### Added
+
+- Target cards can now be reordered by dragging the card-header handle.
+- Target Monitor persists card order in plugin-owned configuration and restores it on later loads.
+- Added a Reset order action to return cards to the underlying target-list order.
+- Added backward-compatible card-order normalization so missing, duplicate, stale, and newly added target IDs are handled safely.
+
+### Improved
+
+- Removed the old centered 1180 px content-width cap so Target Monitor can use the full panel width provided by RemoteHand.
+- Reduced target-card minimum width, card padding, summary label width, and grid gaps so more cards can fit per row without changing target semantics.
+- Live sample events avoid rebuilding the target grid while a drag is in progress.
+
+### Compatibility
+
+- Existing saved configurations remain compatible. Card order defaults to the existing target order when the new field is absent.
+- RemoteHand core is unchanged; target-card layout and ordering remain entirely owned by Target Monitor.
+- Monitoring, alerts, reports, top-bar, tray, History, and Network Identity semantics are unchanged.
+
+### Verification
+
+- Windows Rust validation passed with **54 tests and 0 failures** after the card-order persistence update.
+- Optimized Windows validation package built successfully.
+- Manual layout acceptance confirmed the wider, denser target-card grid makes better use of the available panel width.
+- Manual acceptance confirmed drag/reorder persistence survives a full RemoteHand restart.
+
 ## 0.7.3 - 2026-09-25
 
 ### Fixed
