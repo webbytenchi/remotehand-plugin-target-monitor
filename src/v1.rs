@@ -1221,7 +1221,6 @@ fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut T
     let Some((kind,label,rule,reminder))=selection else{return};
     let play_sound=alerts.enabled && rule.sound_enabled();
     let show_notification=rule.notification_enabled() && monitor.target.show_alert_notifications;
-    if !play_sound && !rule.notification_enabled(){return;}
     let now=now_ms();
     let interval=if reminder{alerts.reminder_interval_seconds}else{rule.cooldown_seconds}.saturating_mul(1000);
     if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
