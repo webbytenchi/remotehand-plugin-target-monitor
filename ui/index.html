@@ -60,6 +60,11 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
       </div>
       <p class="muted">History windows are time-based, so they remain accurate even when probe types use different sampling intervals.</p>
     </div>
+    <div class="settings-section">
+      <h3>RemoteHand integration</h3>
+      <label class="checkline"><input id="settingShowInSidebar" type="checkbox"> Show Target Monitor in RemoteHand sidebar</label>
+      <p class="muted">Hide this shortcut without disabling Target Monitor. The plugin remains available through existing panels and commands.</p>
+    </div>
   </div>
   <div class="settings-actions"><button id="resetMonitoringSettings" class="btn">Reset to defaults</button><button id="saveMonitoringSettings" class="btn primary">Save Settings</button></div>
   <p class="muted">Target-specific monitoring configuration lives with each target. RemoteHand core remains generic.</p>
@@ -350,6 +355,7 @@ function renderSettings(){
   $("settingHistoryValue").value=hist[0];$("settingHistoryUnit").value=String(hist[1]);
   const top=splitDuration(m.topbarHistorySeconds??60,[60,1]);
   $("settingTopbarValue").value=top[0];$("settingTopbarUnit").value=String(top[1]);
+  $("settingShowInSidebar").checked=state.config.showInSidebar!==false;
 }
 function networkCopyButton(value,label){
   const button=document.createElement("button");button.type="button";button.className="btn";button.textContent="Copy";button.title="Copy "+label;
@@ -671,7 +677,7 @@ $("saveRule").onclick=async()=>{try{const r=ruleDraft();r.name=$("rName").value.
 function ruleAssignmentLocations(ruleId){const out=[];for(const t of state.config.targets||[]){for(const check of t.tcpChecks||[]){if((check.alertRuleIds||[]).includes(ruleId))out.push(`${t.name} → ${check.name} → reachable`)}for(const check of t.httpChecks||[]){for(const [field,ids] of Object.entries(check.fieldAlerts||{})){if((ids||[]).includes(ruleId))out.push(`${t.name} → ${check.name} → ${field}`)}}}return out}
 function removeRule(ruleId){const rule=(state.config.alertRules||[]).find(r=>r.id===ruleId);if(!rule)return;pendingDeleteRuleId=ruleId;const uses=ruleAssignmentLocations(ruleId);$("ruleDeleteMessage").innerHTML=`<p><strong>${esc(rule.name)}</strong> is currently used by ${uses.length} source${uses.length===1?"":"s"}.</p><p>${uses.length?"Deleting this rule will also remove it from those assignments.":"This rule is not currently assigned."}</p><p class="muted">Targets and checks are not deleted; only this reusable rule and its assignments are removed.</p>`;$("ruleDeleteAssignments").hidden=!uses.length;$("ruleDeleteAssignments").innerHTML=uses.map(x=>`<div>${esc(x)}</div>`).join("");open("ruleDeleteModal")}
 $("confirmDeleteRule").onclick=async()=>{const ruleId=pendingDeleteRuleId;if(!ruleId)return close("ruleDeleteModal");for(const t of state.config.targets||[]){for(const check of t.tcpChecks||[]){check.alertRuleIds=(check.alertRuleIds||[]).filter(id=>id!==ruleId)}for(const check of t.httpChecks||[]){for(const field of Object.keys(check.fieldAlerts||{})){check.fieldAlerts[field]=(check.fieldAlerts[field]||[]).filter(id=>id!==ruleId);if(!check.fieldAlerts[field].length)delete check.fieldAlerts[field]}}}state.config.alertRules=(state.config.alertRules||[]).filter(r=>r.id!==ruleId);pendingDeleteRuleId=null;close("ruleDeleteModal");await persist("Alert rule and assignments removed.")}
-for(const id of ["settingPingInterval","settingTcpInterval","settingHttpInterval","settingHistoryValue","settingHistoryUnit","settingTopbarValue","settingTopbarUnit"]){$(id).addEventListener("input",()=>settingsDirty=true);$(id).addEventListener("change",()=>settingsDirty=true)}
+for(const id of ["settingPingInterval","settingTcpInterval","settingHttpInterval","settingHistoryValue","settingHistoryUnit","settingTopbarValue","settingTopbarUnit","settingShowInSidebar"]){$(id).addEventListener("input",()=>settingsDirty=true);$(id).addEventListener("change",()=>settingsDirty=true)}
 $("resetMonitoringSettings").onclick=()=>{
   $("settingPingInterval").value=2;$("settingTcpInterval").value=5;$("settingHttpInterval").value=10;
   $("settingHistoryValue").value=1;$("settingHistoryUnit").value="3600";
@@ -687,6 +693,7 @@ $("saveMonitoringSettings").onclick=async()=>{
   if(!Number.isFinite(history)||history<60||history>604800)return notice("Metric history retention must be between 1 minute and 7 days.","error");
   if(!Number.isFinite(topbar)||topbar<10||topbar>3600)return notice("Top-bar history must be between 10 seconds and 1 hour.","error");
   state.config.monitoring={pingIntervalSeconds:ping,tcpIntervalSeconds:tcp,httpIntervalSeconds:http,historyRetentionSeconds:history,topbarHistorySeconds:topbar};
+  state.config.showInSidebar=$("settingShowInSidebar").checked;
   const ok=await persist("Monitoring settings saved.");
   settingsDirty=false;
   renderSettings();
