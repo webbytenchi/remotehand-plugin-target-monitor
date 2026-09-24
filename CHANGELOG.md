@@ -11,6 +11,9 @@ The format follows Keep a Changelog and Semantic Versioning.
 - Independent Sound and Notification delivery controls for Ping High latency, Offline, and Recovery events.
 - Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
 - Reusable Alert Rules list now shows Sound/Notification delivery icons and expandable assignment details for “Used by N sources”.
+- Reusable alert rules now have a master enabled/disabled switch that preserves assignments and configuration while suppressing evaluation.
+- Reusable alert names are now case-insensitively unique; legacy duplicate names are migrated safely on load.
+- HTTP field alert pickers and configured alert chips now keep disabled assigned rules visible, clearly marked Disabled, and show compact delivery indicators.
 - Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
 - Notification-aware Test actions for Ping alerts, with randomized selection among eligible notification-enabled targets.
 - Restored Network Identity with Public IP, local interface, MAC, IPv4/IPv6, copy, top-bar source, and manual refresh controls.
@@ -43,7 +46,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 
 ### Verification
 
-- Windows Rust validation passed with **48 tests and 0 failures** after the reusable alert delivery update.
+- Windows Rust validation previously passed with **48 tests and 0 failures**; final count pending the unique-name and enablement UI update.
 - Native History CSV Save As was manually validated, including cancel and successful save.
 - Packaged-plugin smoke test passed against the updated RemoteHand core branch.
 - Manual acceptance confirmed the Target Monitor sidebar icon, live hide/show toggle, and preserved plugin operation while hidden.
