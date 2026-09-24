@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.0** is the current Target Monitor release.
+**Target Monitor v0.7.1** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -24,7 +24,10 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - configurable top-bar Title, Value, and Graph sources
 - separate normal/alert colors for the top-bar Value
 - configurable monitoring intervals and history retention
-- target reports with Ping, TCP, HTTP, and active-alert detail
+- target reports with Ping, TCP, HTTP, active-alert, and recent-history detail
+- persistent unified alert / notification / Network Identity History
+- lazy-loaded, sortable, filterable, paginated History with CSV export
+- restored Network Identity with configurable auto refresh and change alerts
 - per-target system-tray graph contributions
 
 See `V0.7.0-DESIGN.md` for the delivered product model.
@@ -225,7 +228,7 @@ If the condition triggers again after resolving, it becomes a new alert event.
 
 ## Native notifications
 
-Target Monitor v0.7.0 can request native Windows notifications through RemoteHand's generic plugin notification capability.
+Target Monitor v0.7.1 can request native Windows notifications through RemoteHand's generic plugin notification capability.
 
 Per target, the user may independently choose:
 
@@ -254,8 +257,47 @@ Each target has a report containing:
 - HTTP / HTTPS check results
 - extracted HTTP fields
 - configured and active alerts
+- the ten most recent persisted History events for that target
 
 HTTP field tables support search, filtering, and pagination.
+
+## History
+
+Target Monitor maintains a bounded persistent event history for operational events including:
+
+- Ping High latency / Offline / Recovery events and reminders
+- reusable alert triggers, reminders, and resolutions
+- Network Identity changes
+
+History is separate from delivery. An event may be recorded even when Sound and Notification delivery are disabled.
+
+The History tab is lazy-loaded and supports:
+
+- pagination
+- search
+- target, type, source, status, and date/time filters
+- sortable columns
+- CSV export of the complete current filtered/sorted result set rather than only the visible page
+
+History currently retains the newest 10,000 events in plugin-scoped storage.
+
+## Network Identity
+
+Network Identity shows:
+
+- Public IP
+- local interfaces
+- MAC addresses
+- IPv4 and IPv6 addresses
+- a selectable top-bar address
+- copy actions
+- manual refresh
+
+Auto refresh is enabled by default every five minutes and may be disabled or set to 1, 5, 10, 30, or 60 minutes. When disabled, the startup snapshot still loads once and manual Refresh remains available.
+
+The UI shows the local Last updated timestamp. Successful refreshes also republish the Network Identity top-bar contribution so changed values are reflected there.
+
+Meaningful changes can optionally play a sound and/or show a native notification. The initial snapshot establishes the baseline and never generates a change alert. Later changes are recorded in History even if both delivery channels are disabled.
 
 ## Monitoring settings
 
@@ -370,7 +412,7 @@ Panel ID:
 
 Current release version:
 
-    0.7.0
+    0.7.1
 
 ## Lineage
 
@@ -378,11 +420,11 @@ Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase
 
 Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor continues that product line as **v0.7.0**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+Target Monitor continues that product line as **v0.7.1**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
 
 ## Future alert delivery
 
-Target Monitor v0.7.0 currently supports alert sound/reminders and native Windows notifications.
+Target Monitor v0.7.1 currently supports alert sound/reminders and native Windows notifications.
 
 Future versions may add additional alert-delivery sinks such as:
 
@@ -399,7 +441,7 @@ Target Monitor should remain compact, generic, and user-controlled.
 
 The goal is not to become a full enterprise monitoring platform.
 
-The v0.7.0 release focuses on:
+The v0.7.1 release focuses on:
 
 - proven Ping monitoring
 - TCP reachability

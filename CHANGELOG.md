@@ -4,6 +4,53 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.1 - 2026-09-24
+
+### Added
+
+- Independent Sound and Notification delivery controls for Ping High latency, Offline, and Recovery events.
+- Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
+- Reusable Alert Rules list now shows Sound/Notification delivery icons and expandable assignment details for “Used by N sources”.
+- Reusable alert rules now have a master enabled/disabled switch that preserves assignments and configuration while suppressing evaluation.
+- Reusable alert names are now case-insensitively unique; legacy duplicate names are migrated safely on load.
+- HTTP field alert pickers and configured alert chips now keep disabled assigned rules visible, clearly marked Disabled, and show compact delivery indicators.
+- Independent Sound and Notification delivery controls for reusable alert rules, with built-in beep fallback when Sound is enabled without a custom file.
+- Notification-aware Test actions for Ping alerts, with randomized selection among eligible notification-enabled targets.
+- Restored Network Identity with Public IP, local interface, MAC, IPv4/IPv6, copy, top-bar source, and manual refresh controls.
+- Configurable Network Identity auto refresh with 1, 5, 10, 30, and 60 minute intervals; default 5 minutes.
+- Last-updated timestamp for Network Identity refreshes.
+- Optional Network Identity change sound and native notification delivery; the first snapshot is baseline-only.
+- Persistent unified History for Ping events, reusable alerts, resolutions/reminders, and Network Identity changes.
+- Lazy-loaded, paginated, sortable, searchable, filterable History table.
+- CSV export for the full current filtered/sorted History result set, not only the visible page.
+- Recent per-target History inside Target Reports with a View all history action.
+- First-class RemoteHand sidebar contribution with a monitor/pulse icon.
+- A Settings switch to show or hide Target Monitor in the RemoteHand sidebar without disabling the plugin.
+
+### Changed
+
+- Network Identity meaningful changes are recorded in History independently of whether Sound or Notification delivery is enabled.
+- Reusable alert triggers and reminders are recorded in History independently of Sound and Notification delivery settings.
+- Reusable alert delivery controls now follow the same presentation and behavior as Network Identity change delivery.
+- Reusable alert triggers and reminders are recorded in History independently of Sound and Notification delivery settings.
+- Reusable alert delivery controls now follow the same presentation and behavior as Network Identity change delivery.
+- Successful Network Identity refreshes also refresh its top-bar contribution when values change.
+- Network Identity is visually separated from the core Targets / Alerts / Settings navigation group.
+- Sidebar visibility updates are applied live and preserve RemoteHand's generic contribution ordering.
+
+### Fixed
+
+- Corrected the Ping Alert Sounds master checkbox layout so it no longer inherits the global full-width input style inside RemoteHand.
+- Kept the checkbox left-aligned with its “Enable alert sounds” label across normal and narrow panel layouts.
+- Added spacing between the Network Identity last-updated text and Refresh button.
+
+### Verification
+
+- Windows Rust validation passed with **50 tests and 0 failures** after the unique-name and enablement UI update.
+- Native History CSV Save As was manually validated, including cancel and successful save.
+- Packaged-plugin smoke test passed against the updated RemoteHand core branch.
+- Manual acceptance confirmed the Target Monitor sidebar icon, live hide/show toggle, and preserved plugin operation while hidden.
+
 ## 0.7.0 - 2026-09-24
 
 ### Added
@@ -106,3 +153,7 @@ The codebase starts from the validated Host Monitor v0.6.1 implementation, with 
 RemoteHand Host Monitor v0.6.1 is the historical predecessor.
 
 RemoteHand Target Monitor continues from that validated foundation in a new repository and product line.
+
+- Packaged-plugin UI smoke passed for the latest reusable alert assignment polish, including unique names, master enable/disable, disabled assignment visibility, compact picker indicators, and stable expanded assignment details.
+
+- Floating toast notices were smoke-tested successfully across normal and modal contexts, including auto-dismiss and manual close behavior.

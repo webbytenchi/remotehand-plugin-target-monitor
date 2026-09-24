@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,8 +17,11 @@ const DEFAULT_TCP_INTERVAL_SECONDS: u64 = 5;
 const DEFAULT_HTTP_INTERVAL_SECONDS: u64 = 10;
 const DEFAULT_HISTORY_RETENTION_SECONDS: u64 = 60 * 60;
 const DEFAULT_TOPBAR_HISTORY_SECONDS: u64 = 60;
+const DEFAULT_NETWORK_IDENTITY_REFRESH_SECONDS: u64 = 5 * 60;
 const STATE_CONFIRMATION_SAMPLES: u32 = 2;
 const STORAGE_KEY: &str = "config";
+const HISTORY_STORAGE_KEY: &str = "history-v1";
+const MAX_HISTORY_EVENTS: usize = 10_000;
 const DEFAULT_TARGET_ID: &str = "target-8-8-8-8";
 const DEFAULT_TARGET_NAME: &str = "Google DNS";
 const DEFAULT_TARGET: &str = "8.8.8.8";
@@ -49,6 +52,9 @@ fn default_value_alert_color() -> String { DEFAULT_VALUE_ALERT_COLOR.to_string()
 fn default_background_color() -> String { DEFAULT_BACKGROUND_COLOR.to_string() }
 fn default_border_color() -> String { DEFAULT_BORDER_COLOR.to_string() }
 fn default_network_identity_topbar_source() -> String { "public".to_string() }
+fn default_network_identity_auto_refresh() -> bool { true }
+fn default_network_identity_refresh_seconds() -> u64 { DEFAULT_NETWORK_IDENTITY_REFRESH_SECONDS }
+fn default_false() -> bool { false }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,13 +139,29 @@ struct SoundConfig {
 struct LegacyAlertRule {
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sound_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notification_enabled: Option<bool>,
     #[serde(default = "default_legacy_cooldown")]
     cooldown_seconds: u64,
     #[serde(default)]
     sound: Option<SoundConfig>,
 }
 fn default_legacy_cooldown() -> u64 { 60 }
-fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule { LegacyAlertRule { enabled: true, cooldown_seconds, sound: None } }
+fn legacy_rule(cooldown_seconds: u64) -> LegacyAlertRule {
+    LegacyAlertRule {
+        enabled: true,
+        sound_enabled: Some(true),
+        notification_enabled: Some(true),
+        cooldown_seconds,
+        sound: None,
+    }
+}
+impl LegacyAlertRule {
+    fn sound_enabled(&self) -> bool { self.sound_enabled.unwrap_or(self.enabled) }
+    fn notification_enabled(&self) -> bool { self.notification_enabled.unwrap_or(self.enabled) }
+}
 impl Default for LegacyAlertRule {
     fn default() -> Self { legacy_rule(default_legacy_cooldown()) }
 }
@@ -183,6 +205,10 @@ struct GenericAlertRule {
     operator: String,
     #[serde(default)]
     value: Option<Value>,
+    #[serde(default = "default_true")]
+    sound_enabled: bool,
+    #[serde(default = "default_true")]
+    notification_enabled: bool,
     #[serde(default)]
     sound: Option<SoundConfig>,
     #[serde(default)]
@@ -382,14 +408,106 @@ struct StoredConfig {
     alerts: LegacyAlertConfig,
     #[serde(default)]
     alert_rules: Vec<GenericAlertRule>,
+    #[serde(default = "default_true")]
+    show_in_sidebar: bool,
     #[serde(default)]
     show_network_identity_topbar: bool,
     #[serde(default = "default_network_identity_topbar_source")]
     network_identity_topbar_source: String,
+    #[serde(default = "default_network_identity_auto_refresh")]
+    network_identity_auto_refresh: bool,
+    #[serde(default = "default_network_identity_refresh_seconds")]
+    network_identity_refresh_seconds: u64,
+    #[serde(default = "default_false")]
+    network_identity_change_sound: bool,
+    #[serde(default = "default_false")]
+    network_identity_change_notification: bool,
+    #[serde(default)]
+    network_identity_change_sound_config: Option<SoundConfig>,
 }
 impl Default for StoredConfig {
     fn default() -> Self { default_config() }
 }
+
+#[derive(Debug, Clone, Default)]
+struct NetworkIdentity {
+    public_ip: Option<String>,
+    public_ip_error: Option<String>,
+    interfaces: Vec<Value>,
+    updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryEvent {
+    id: String,
+    timestamp: u64,
+    #[serde(default)]
+    target_id: Option<String>,
+    #[serde(default)]
+    target_name: Option<String>,
+    event_type: String,
+    source: String,
+    #[serde(default)]
+    source_label: String,
+    name: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    old_value: String,
+    #[serde(default)]
+    new_value: String,
+    status: String,
+    sound: bool,
+    notification: bool,
+    acknowledged: bool,
+    reminder: bool,
+    #[serde(default)]
+    details: String,
+}
+#[derive(Debug, Clone)]
+struct HistoryState {
+    events: Arc<Mutex<Vec<HistoryEvent>>>,
+    dirty: Arc<AtomicBool>,
+}
+impl Default for HistoryState {
+    fn default() -> Self {
+        Self { events: Arc::new(Mutex::new(Vec::new())), dirty: Arc::new(AtomicBool::new(false)) }
+    }
+}
+impl HistoryState {
+    fn record(&self, event: HistoryEvent) {
+        if let Ok(mut events)=self.events.lock() {
+            events.push(event);
+            if events.len()>MAX_HISTORY_EVENTS {
+                let remove=events.len()-MAX_HISTORY_EVENTS;
+                events.drain(0..remove);
+            }
+            self.dirty.store(true,Ordering::Release);
+        }
+    }
+    fn snapshot(&self)->Vec<HistoryEvent>{self.events.lock().map(|events|events.clone()).unwrap_or_default()}
+    fn replace(&self, mut events:Vec<HistoryEvent>){
+        if events.len()>MAX_HISTORY_EVENTS { events.drain(0..events.len()-MAX_HISTORY_EVENTS); }
+        if let Ok(mut current)=self.events.lock(){*current=events;}
+        self.dirty.store(false,Ordering::Release);
+    }
+}
+fn history_id(prefix:&str)->String{format!("{prefix}-{}-{}",now_ms(),std::process::id())}
+fn target_history_event(monitor:&TargetMonitor,event_type:&str,source:&str,name:&str,value:String,status:&str,sound:bool,notification:bool,reminder:bool,details:String)->HistoryEvent{
+    HistoryEvent{
+        id:history_id("event"),timestamp:now_ms(),target_id:Some(monitor.target.id.clone()),target_name:Some(monitor.target.name.clone()),
+        event_type:event_type.into(),source:source.into(),source_label:source_label(monitor,source),name:name.into(),value,old_value:String::new(),new_value:String::new(),
+        status:status.into(),sound,notification,acknowledged:false,reminder,details,
+    }
+}
+fn record_history(output:&mpsc::Sender<Value>,history:&HistoryState,event:HistoryEvent){
+    let payload=json!({"timestamp":event.timestamp,"targetId":event.target_id,"eventType":event.event_type});
+    history.record(event);
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.history.changed",payload});
+}
+
+
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -561,12 +679,14 @@ impl TargetMonitor {
 struct MonitorStore {
     targets: BTreeMap<String, TargetMonitor>,
     config: StoredConfig,
+    network_identity: NetworkIdentity,
+    history: HistoryState,
 }
 impl MonitorStore {
     fn new() -> Self {
         let config = default_config();
         let targets = config.targets.iter().cloned().map(|t| (t.id.clone(), TargetMonitor::new(t))).collect();
-        Self { targets, config }
+        Self { targets, config, network_identity: NetworkIdentity::default(), history: HistoryState::default() }
     }
     fn replace_config(&mut self, config: StoredConfig) {
         let old = std::mem::take(&mut self.targets);
@@ -646,7 +766,13 @@ fn default_target() -> MonitorTarget {
 fn default_config() -> StoredConfig {
     StoredConfig {
         targets: vec![default_target()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
+        show_in_sidebar: true,
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
+        network_identity_auto_refresh: default_network_identity_auto_refresh(),
+        network_identity_refresh_seconds: default_network_identity_refresh_seconds(),
+        network_identity_change_sound: false,
+        network_identity_change_notification: false,
+        network_identity_change_sound_config: None,
     }
 }
 
@@ -685,12 +811,17 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     if config.monitoring.topbar_history_seconds < 10 || config.monitoring.topbar_history_seconds > 60 * 60 {
         return Err("top-bar history must be 10 seconds to 1 hour".into());
     }
+    if !matches!(config.network_identity_refresh_seconds, 60|300|600|1800|3600) {
+        return Err("Network Identity refresh interval must be 1, 5, 10, 30, or 60 minutes".into());
+    }
     let mut target_ids = BTreeSet::new();
     let mut rule_ids = BTreeSet::new();
+    let mut rule_names = BTreeSet::new();
     let mut sound_total = 0u64;
     for rule in &config.alert_rules {
         if rule.id.trim().is_empty() || !rule_ids.insert(rule.id.clone()) { return Err("alert rule ids must be unique and non-empty".into()); }
         if rule.name.trim().is_empty() || rule.name.len() > 128 { return Err("alert rule name is missing or too long".into()); }
+        if !rule_names.insert(rule.name.trim().to_lowercase()) { return Err(format!("alert rule name must be unique: {}", rule.name)); }
         if !matches!(rule.operator.as_str(), ">="|"<="|"="|"equals"|"changed") { return Err(format!("unsupported alert operator: {}", rule.operator)); }
         if rule.operator != "changed" && rule.value.is_none() { return Err(format!("alert rule {} requires a comparison value", rule.name)); }
         if rule.reminder_interval_seconds < 5 || rule.reminder_interval_seconds > 86400 { return Err(format!("alert rule {} reminder interval must be 5-86400 seconds", rule.name)); }
@@ -699,6 +830,7 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     for legacy in [&config.alerts.high_latency, &config.alerts.offline, &config.alerts.recovery] {
         if let Some(sound) = &legacy.sound { validate_sound(sound)?; sound_total += sound.size_bytes; }
     }
+    if let Some(sound)=&config.network_identity_change_sound_config { validate_sound(sound)?; sound_total += sound.size_bytes; }
     if sound_total > MAX_TOTAL_SOUND_BYTES { return Err("total alert sounds exceed 12 MiB".into()); }
     for target in &config.targets {
         if target.id.trim().is_empty() || !target_ids.insert(target.id.clone()) { return Err("target ids must be unique and non-empty".into()); }
@@ -736,6 +868,22 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     }
     Ok(())
 }
+fn migrate_legacy_rule_names(config:&mut StoredConfig)->bool{
+    let mut used=BTreeSet::new();
+    let mut changed=false;
+    for rule in &mut config.alert_rules {
+        let base=rule.name.trim().to_string();
+        let mut candidate=base.clone();
+        let mut suffix=2usize;
+        while used.contains(&candidate.to_lowercase()) {
+            candidate=format!("{base} ({suffix})");
+            suffix+=1;
+        }
+        if candidate!=rule.name { rule.name=candidate.clone(); changed=true; }
+        used.insert(candidate.to_lowercase());
+    }
+    changed
+}
 fn normalize_config(mut config: StoredConfig) -> Result<StoredConfig, String> {
     if config.targets.is_empty() { config.targets.push(default_target()); }
     validate_config(&config)?;
@@ -755,6 +903,152 @@ fn write_frame_raw<W: Write,T:Serialize>(writer:&mut W,value:&T)->Result<(),Stri
 fn send_outbound(output:&mpsc::Sender<Value>,value:impl Serialize)->Result<(),String>{
     output.send(serde_json::to_value(value).map_err(|e|e.to_string())?).map_err(|_|"plugin output writer stopped".into())
 }
+
+fn parse_public_ip(value:&str)->Option<String>{value.trim().parse::<IpAddr>().ok().map(|address|address.to_string())}
+fn lookup_public_ip()->Result<String,String>{
+    const SERVICES:[&str;2]=["https://api.ipify.org","https://ifconfig.me/ip"];
+    let mut last_error="public IP lookup failed".to_string();
+    for url in SERVICES {
+        match ureq::get(url).timeout(Duration::from_secs(4)).call() {
+            Ok(response)=>match response.into_string() {
+                Ok(body)=>if let Some(address)=parse_public_ip(&body){return Ok(address)}else{last_error=format!("{url} returned an invalid IP address")},
+                Err(error)=>last_error=format!("{url} response failed: {error}"),
+            },
+            Err(error)=>last_error=format!("{url} lookup failed: {error}"),
+        }
+    }
+    Err(last_error)
+}
+fn topbar_selectable_ip(value:&str)->bool{
+    match value.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address))=>!address.is_loopback()&&!address.is_unspecified(),
+        Ok(IpAddr::V6(address))=>!address.is_loopback()&&!address.is_unspecified(),
+        Err(_)=>false,
+    }
+}
+fn interface_topbar_icon(name:&str,family:&str)->&'static str{
+    if family=="ipv6"{return "ipv6";}
+    let lower=name.to_ascii_lowercase();
+    if lower.contains("wi-fi")||lower.contains("wifi")||lower.contains("wireless")||lower.contains("wlan"){"wifi"}
+    else if lower.contains("tailscale")||lower.contains("vpn")||lower.contains("wireguard")||lower.starts_with("wg")||lower.contains("zerotier")||lower.contains("tun")||lower.contains("tap"){"shield"}
+    else{"ethernet"}
+}
+fn interface_topbar_label(name:&str,family:&str)->&'static str{
+    if family=="ipv6"{return "IPv6";}
+    match interface_topbar_icon(name,family){"wifi"=>"Wi-Fi","shield"=>"VPN",_=>"Ethernet / LAN"}
+}
+fn network_identity_topbar_options(identity:&NetworkIdentity)->Vec<Value>{
+    let mut options=Vec::new();
+    if let Some(public_ip)=identity.public_ip.as_deref(){options.push(json!({"key":"public","label":"Public IP","address":public_ip,"detail":"Internet-facing address","icon":"globe"}));}
+    for interface in &identity.interfaces {
+        let name=interface.get("name").and_then(Value::as_str).unwrap_or("Interface");
+        let addresses=interface.get("addresses").and_then(Value::as_array).cloned().unwrap_or_default();
+        for family in ["ipv4","ipv6"] {
+            let address=addresses.iter().find_map(|entry|{
+                let entry_family=entry.get("family").and_then(Value::as_str).unwrap_or("");
+                let address=entry.get("address").and_then(Value::as_str)?;
+                (entry_family==family&&topbar_selectable_ip(address)).then_some(address)
+            });
+            let Some(address)=address else{continue};
+            options.push(json!({"key":format!("interface:{name}:{family}"),"label":interface_topbar_label(name,family),"address":address,"detail":name,"icon":interface_topbar_icon(name,family)}));
+        }
+    }
+    options
+}
+fn network_identity_value(identity:&NetworkIdentity)->Value{
+    json!({"publicIp":identity.public_ip,"publicIpError":identity.public_ip_error,"interfaces":identity.interfaces,"topbarOptions":network_identity_topbar_options(identity),"updatedAt":identity.updated_at})
+}
+
+fn network_identity_topbar_item(identity:&NetworkIdentity,selected_source:&str)->Value{
+    let options=network_identity_topbar_options(identity);
+    let selected=options.iter()
+        .find(|option|option.get("key").and_then(Value::as_str)==Some(selected_source))
+        .or_else(||options.iter().find(|option|option.get("key").and_then(Value::as_str)==Some("public")))
+        .or_else(||options.first());
+    let selected_address=selected.and_then(|option|option.get("address")).and_then(Value::as_str).unwrap_or("Unavailable");
+    let selected_label=selected.and_then(|option|option.get("label")).and_then(Value::as_str).unwrap_or("Network");
+    let selected_icon=selected.and_then(|option|option.get("icon")).and_then(Value::as_str).unwrap_or("globe");
+    let menu_items=options.iter().enumerate().take(24).map(|(index,option)|{
+        let address=option.get("address").and_then(Value::as_str).unwrap_or("");
+        json!({
+            "id":format!("network-ip-{index}"),
+            "label":option.get("label").and_then(Value::as_str).unwrap_or("IP address"),
+            "value":address,
+            "detail":option.get("detail").and_then(Value::as_str).unwrap_or("Click to copy"),
+            "icon":option.get("icon").and_then(Value::as_str).unwrap_or("ethernet"),
+            "action":{"type":"plugin-call","method":"monitor.clipboard.write","params":{"text":address}}
+        })
+    }).collect::<Vec<_>>();
+    json!({
+        "id":"target-monitor:network-identity",
+        "title":"Network Identity",
+        "tooltip":format!("{selected_label} · {selected_address}"),
+        "size":{"width":124,"height":44},
+        "icon":selected_icon,
+        "content":{"type":"text","label":selected_address,"tone":"accent","fontSize":10},
+        "menu":{"items":menu_items}
+    })
+}
+
+fn network_identity_snapshot(identity:&NetworkIdentity)->BTreeMap<String,String>{
+    let mut out=BTreeMap::new();
+    if let Some(public_ip)=identity.public_ip.as_deref(){out.insert("Public IP".into(),public_ip.into());}
+    for interface in &identity.interfaces{
+        let name=interface.get("name").and_then(Value::as_str).unwrap_or("Interface");
+        if let Some(mac)=interface.get("macAddress").and_then(Value::as_str){if !mac.is_empty(){out.insert(format!("{name} · MAC"),mac.into());}}
+        for address in interface.get("addresses").and_then(Value::as_array).cloned().unwrap_or_default(){
+            let family=address.get("family").and_then(Value::as_str).unwrap_or("ip").to_ascii_uppercase();
+            if let Some(value)=address.get("address").and_then(Value::as_str){if !value.is_empty(){out.insert(format!("{name} · {family}"),value.into());}}
+        }
+    }
+    out
+}
+fn network_identity_change_details(previous:&NetworkIdentity,next:&NetworkIdentity)->Vec<String>{
+    if previous.updated_at.is_none(){return Vec::new();}
+    let old=network_identity_snapshot(previous);let new=network_identity_snapshot(next);
+    let keys=old.keys().chain(new.keys()).cloned().collect::<BTreeSet<_>>();
+    let mut changes=Vec::new();
+    for key in keys.iter(){
+        let before=old.get(key).map(String::as_str).unwrap_or("—");
+        let after=new.get(key).map(String::as_str).unwrap_or("—");
+        if before!=after{changes.push(format!("{key}: {before} → {after}"));}
+    }
+    changes
+}
+fn emit_network_identity_notification(output:&mpsc::Sender<Value>,details:&str){
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
+        "itemId":"network-identity","title":"Network Identity changed","body":bounded_notification_text(details,255),
+        "tone":"warning","silent":true,"action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
+    })});
+}
+fn emit_network_identity_test_notification(output:&mpsc::Sender<Value>){
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
+        "itemId":"network-identity","title":"Network Identity · Test","body":"Target Monitor test notification",
+        "tone":"warning","silent":true,"action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
+    })});
+}
+
+fn handle_network_identity_change(output:&mpsc::Sender<Value>,history:&HistoryState,config:&StoredConfig,previous:&NetworkIdentity,next:&NetworkIdentity){
+    let changes=network_identity_change_details(previous,next);
+    if changes.is_empty(){return;}
+    let details=changes.join("\n");
+    let sound=config.network_identity_change_sound;
+    let notification=config.network_identity_change_notification;
+    record_history(output,history,HistoryEvent{
+        id:history_id("network"),timestamp:now_ms(),target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),
+        name:"Network Identity changed".into(),value:format!("{} change{}",changes.len(),if changes.len()==1{""}else{"s"}),old_value:String::new(),new_value:String::new(),
+        status:"Changed".into(),sound,notification,acknowledged:false,reminder:false,details:details.clone(),
+    });
+    if sound{
+        let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
+            "alertType":"networkIdentityChanged","ruleName":"Network Identity changed","source":"Network Identity","playSound":true,
+            "sound":sound_payload(&config.network_identity_change_sound_config),
+            "fallbackBeep":config.network_identity_change_sound_config.is_none()
+        })});
+    }
+    if notification{emit_network_identity_notification(output,&details);}
+}
+
 fn host_request(input:&mut impl Read, output:&mpsc::Sender<Value>, request_id:&mut u64, method:&'static str, params:Value)->Result<Value,String>{
     let id=*request_id; *request_id+=1;
     send_outbound(output,PluginHostRequest{message_type:"plugin.request",request_id:id,method,params})?;
@@ -773,9 +1067,76 @@ fn save_config(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut 
     host_request(input,output,request_id,"storage.set",json!({"key":STORAGE_KEY,"value":config}))?; Ok(())
 }
 fn ensure_config_loaded(store:&Arc<Mutex<MonitorStore>>,input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<(),String>{
-    let config=match load_config(input,output,request_id)? { Some(c)=>normalize_config(c)?, None=>default_config() };
+    let (config,migrated)=match load_config(input,output,request_id)? {
+        Some(mut c)=>{let migrated=migrate_legacy_rule_names(&mut c);(normalize_config(c)?,migrated)},
+        None=>(default_config(),false)
+    };
+    if migrated { save_config(input,output,request_id,&config)?; }
     store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.replace_config(config); Ok(())
 }
+fn load_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<Vec<HistoryEvent>,String>{
+    let result=host_request(input,output,request_id,"storage.get",json!({"key":HISTORY_STORAGE_KEY}))?;
+    match result.get("value"){None|Some(Value::Null)=>Ok(Vec::new()),Some(value)=>serde_json::from_value(value.clone()).map_err(|e|format!("invalid stored Target Monitor history: {e}"))}
+}
+fn save_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64,history:&HistoryState)->Result<(),String>{
+    if !history.dirty.load(Ordering::Acquire){return Ok(());}
+    let events=history.snapshot();
+    host_request(input,output,request_id,"storage.set",json!({"key":HISTORY_STORAGE_KEY,"value":events}))?;
+    history.dirty.store(false,Ordering::Release);
+    Ok(())
+}
+fn history_source_text(event:&HistoryEvent)->&str{if event.source_label.is_empty(){&event.source}else{&event.source_label}}
+fn history_text(event:&HistoryEvent)->String{
+    format!("{} {} {} {} {} {} {} {} {} {}",event.target_name.as_deref().unwrap_or(""),event.event_type,event.source,history_source_text(event),event.name,event.value,event.old_value,event.new_value,event.status,event.details).to_ascii_lowercase()
+}
+fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
+    let search=params.get("search").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
+    let target=params.get("targetId").and_then(Value::as_str).unwrap_or("");
+    let event_type=params.get("eventType").and_then(Value::as_str).unwrap_or("");
+    let source=params.get("source").and_then(Value::as_str).unwrap_or("");
+    let status=params.get("status").and_then(Value::as_str).unwrap_or("");
+    let from=params.get("from").and_then(Value::as_u64).unwrap_or(0);
+    let to=params.get("to").and_then(Value::as_u64).unwrap_or(u64::MAX);
+    let mut rows=events.iter().filter(|event|{
+        (search.is_empty()||history_text(event).contains(&search))
+        &&(target.is_empty()||event.target_id.as_deref()==Some(target))
+        &&(event_type.is_empty()||event.event_type==event_type)
+        &&(source.is_empty()||history_source_text(event)==source||event.source==source)
+        &&(status.is_empty()||event.status==status)
+        &&event.timestamp>=from&&event.timestamp<=to
+    }).cloned().collect::<Vec<_>>();
+    let sort_by=params.get("sortBy").and_then(Value::as_str).unwrap_or("timestamp");
+    let descending=params.get("sortDir").and_then(Value::as_str).unwrap_or("desc")!="asc";
+    rows.sort_by(|a,b|{
+        let order=match sort_by{
+            "target"=>a.target_name.cmp(&b.target_name),
+            "eventType"=>a.event_type.cmp(&b.event_type),
+            "source"=>history_source_text(a).cmp(history_source_text(b)),
+            "name"=>a.name.cmp(&b.name),
+            "status"=>a.status.cmp(&b.status),
+            _=>a.timestamp.cmp(&b.timestamp),
+        };
+        if descending{order.reverse()}else{order}
+    });
+    let total=rows.len();
+    let mut targets=BTreeSet::new();let mut types=BTreeSet::new();let mut sources=BTreeSet::new();let mut statuses=BTreeSet::new();
+    for event in events{
+        if let (Some(id),Some(name))=(&event.target_id,&event.target_name){targets.insert((id.clone(),name.clone()));}
+        types.insert(event.event_type.clone());sources.insert(history_source_text(event).to_string());statuses.insert(event.status.clone());
+    }
+    if export_all{
+        return json!({"rows":rows,"total":total});
+    }
+    let page=params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let page_size=params.get("pageSize").and_then(Value::as_u64).unwrap_or(25).clamp(10,100) as usize;
+    let start=(page-1).saturating_mul(page_size);
+    let paged=rows.into_iter().skip(start).take(page_size).collect::<Vec<_>>();
+    json!({"rows":paged,"total":total,"page":page,"pageSize":page_size,"facets":{
+        "targets":targets.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),
+        "eventTypes":types,"sources":sources,"statuses":statuses
+    }})
+}
+
 
 fn resolve_target(target:&str)->Result<IpAddr,String>{
     let target=target.trim();
@@ -856,7 +1217,7 @@ fn rule_matches(rule:&GenericAlertRule,current:&Value,previous:Option<&Value>)->
 fn sound_payload(sound:&Option<SoundConfig>)->Value{
     match sound { Some(s)=>json!({"filename":s.filename,"mime":s.mime,"dataUrl":s.data_url,"durationMs":s.duration_ms}),None=>Value::Null }
 }
-fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],source:&str,current:Value,assigned:&[String]){
+fn evaluate_rules(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],source:&str,current:Value,assigned:&[String]){
     let previous=monitor.previous_values.get(source).cloned();
     for rule_id in assigned {
         let Some(rule)=rules.iter().find(|r|&r.id==rule_id) else {continue};
@@ -867,49 +1228,67 @@ fn evaluate_rules(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,rules:&
             let alert=ActiveAlert{key:key.clone(),target_id:monitor.target.id.clone(),rule_id:rule.id.clone(),rule_name:rule.name.clone(),source:source.into(),current_value:current.clone(),since:now,acknowledged:false};
             monitor.active_alerts.insert(key.clone(),alert.clone());
             monitor.last_generic_alert_at.insert(key.clone(),now);
-            let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
-            emit_rule_notification(output,monitor,rule,source,&current,false);
+            let sound=rule.sound_enabled;
+            let notification=rule.notification_enabled && monitor.target.show_alert_notifications;
+            if sound {
+                let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":false,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+            }
+            if rule.notification_enabled { emit_rule_notification(output,monitor,rule,source,&current,false); }
+            record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Triggered",sound,notification,false,String::new()));
         } else if matches {
             let should_remind=rule.reminders_enabled && monitor.last_generic_alert_at.get(&key).map(|last|now.saturating_sub(*last)>=rule.reminder_interval_seconds.saturating_mul(1000)).unwrap_or(true);
             if let Some(alert)=monitor.active_alerts.get_mut(&key){alert.current_value=current.clone();if should_remind{alert.acknowledged=false;}}
             if should_remind {
                 monitor.last_generic_alert_at.insert(key.clone(),now);
-                let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
-                emit_rule_notification(output,monitor,rule,source,&current,true);
+                let sound=rule.sound_enabled;
+                let notification=rule.notification_enabled && monitor.target.show_alert_notifications;
+                if sound {
+                    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":monitor.target.id,"targetName":monitor.target.name,"alertType":"rule","ruleId":rule.id,"ruleName":rule.name,"source":source,"currentValue":current,"reminder":true,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
+                }
+                if rule.notification_enabled { emit_rule_notification(output,monitor,rule,source,&current,true); }
+                record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Reminder",sound,notification,true,String::new()));
             }
+        } else if monitor.active_alerts.remove(&key).is_some() {
+            monitor.last_generic_alert_at.remove(&key);
+            record_history(output,history,target_history_event(monitor,"Alert",source,&rule.name,formatted_value_for_source(monitor,source,&current,true),"Resolved",false,false,false,String::new()));
         } else {
-            monitor.active_alerts.remove(&key);
             monitor.last_generic_alert_at.remove(&key);
         }
     }
     monitor.previous_values.insert(source.into(),current);
 }
-fn legacy_alert(output:&mpsc::Sender<Value>,monitor:&mut TargetMonitor,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
-    if !alerts.enabled{return;}
+fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut TargetMonitor,alerts:&LegacyAlertConfig,transition:Option<(String,String)>){
     let current=monitor.last_state.clone();
     let selection=if let Some((previous,next))=transition {
         match (previous.as_str(),next.as_str()) {
-            ("NORMAL","HIGH LATENCY")|("READY","HIGH LATENCY")=>Some(("highLatency",&alerts.high_latency,false)),
-            ("NORMAL","OFFLINE")|("HIGH LATENCY","OFFLINE")|("READY","OFFLINE")=>Some(("offline",&alerts.offline,false)),
-            ("OFFLINE","NORMAL")|("OFFLINE","HIGH LATENCY")|("HIGH LATENCY","NORMAL")=>Some(("recovery",&alerts.recovery,false)),
+            ("NORMAL","HIGH LATENCY")|("READY","HIGH LATENCY")=>Some(("highLatency","High latency",&alerts.high_latency,false)),
+            ("NORMAL","OFFLINE")|("HIGH LATENCY","OFFLINE")|("READY","OFFLINE")=>Some(("offline","Offline",&alerts.offline,false)),
+            ("OFFLINE","NORMAL")|("OFFLINE","HIGH LATENCY")|("HIGH LATENCY","NORMAL")=>Some(("recovery","Recovery",&alerts.recovery,false)),
             _=>None
         }
     } else if alerts.reminders_enabled {
         match current.as_str() {
-            "HIGH LATENCY"=>Some(("highLatency",&alerts.high_latency,true)),
-            "OFFLINE"=>Some(("offline",&alerts.offline,true)),
+            "HIGH LATENCY"=>Some(("highLatency","High latency",&alerts.high_latency,true)),
+            "OFFLINE"=>Some(("offline","Offline",&alerts.offline,true)),
             _=>None
         }
     } else { None };
-    let Some((kind,rule,reminder))=selection else{return};
-    if !rule.enabled{return;}
+    let Some((kind,label,rule,reminder))=selection else{return};
+    let play_sound=alerts.enabled && rule.sound_enabled();
+    let show_notification=rule.notification_enabled() && monitor.target.show_alert_notifications;
     let now=now_ms();
     let interval=if reminder{alerts.reminder_interval_seconds}else{rule.cooldown_seconds}.saturating_mul(1000);
     if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
     monitor.last_legacy_alert_at.insert(kind.to_string(),now);
     let target=&monitor.target;
-    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({"targetId":target.id,"targetName":target.name,"alertType":kind,"reminder":reminder,"sound":sound_payload(&rule.sound),"fallbackBeep":rule.sound.is_none()})});
-    emit_legacy_notification(output,monitor,kind,reminder);
+    if play_sound || rule.notification_enabled() {
+        let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
+            "targetId":target.id,"targetName":target.name,"alertType":kind,"ruleName":label,"source":"ping.latency",
+            "reminder":reminder,"playSound":play_sound,"sound":sound_payload(&rule.sound),"fallbackBeep":play_sound && rule.sound.is_none()
+        })});
+    }
+    if rule.notification_enabled(){emit_legacy_notification(output,monitor,kind,reminder);}
+    record_history(output,history,target_history_event(monitor,"Ping", "ping.latency",label,formatted_source_value(monitor,"ping.latency",true),if reminder{"Reminder"}else if kind=="recovery"{"Recovered"}else{"Triggered"},play_sound,show_notification,reminder,String::new()));
 }
 
 fn source_value(monitor:&TargetMonitor,source:&str)->Value{
@@ -1043,6 +1422,30 @@ fn emit_legacy_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,k
     };
     emit_native_notification(output,monitor,format!("{} · {}",monitor.target.name,label),body,tone);
 }
+fn emit_rule_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,rule_name:&str){
+    emit_native_notification(
+        output,
+        monitor,
+        format!("{} · {} · Test",monitor.target.name,rule_name),
+        "Reusable alert rule test notification".to_string(),
+        "warning",
+    );
+}
+fn emit_legacy_test_notification(output:&mpsc::Sender<Value>,monitor:&TargetMonitor,kind:&str){
+    let (label,tone)=match kind{
+        "highLatency"=>("High latency","warning"),
+        "offline"=>("Offline","danger"),
+        "recovery"=>("Recovered","success"),
+        _=>return
+    };
+    emit_native_notification(
+        output,
+        monitor,
+        format!("{} · {} · Test",monitor.target.name,label),
+        "Target Monitor test notification".to_string(),
+        tone,
+    );
+}
 fn surface_tooltip(monitor:&TargetMonitor,value_source:&str,graph_source:&str)->String{
     let mut parts=vec![format!("{} · {}",monitor.target.name,monitor.overall_state())];
     if value_source!="none"{
@@ -1094,21 +1497,39 @@ fn topbar_value(store:&MonitorStore)->Value{
         if unread>0{children.push(json!({"type":"badge","label":unread.to_string(),"tone":"warning","fontSize":9}));}
         json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,&m.target.topbar.graph_source),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
     }).collect::<Vec<_>>();
+    let mut items=items;
+    if store.config.show_network_identity_topbar {
+        items.push(network_identity_topbar_item(&store.network_identity,&store.config.network_identity_topbar_source));
+    }
     json!({"items":items})
 }
 fn tray_value(store:&MonitorStore)->Value{
-    let items=store.targets.values().filter(|m|m.target.show_in_system_tray||m.target.show_alert_notifications).map(|m|{
+    let mut items=store.targets.values().filter(|m|m.target.show_in_system_tray||m.target.show_alert_notifications).map(|m|{
         let source=if m.target.topbar.graph_source=="none"{"ping.latency"}else{m.target.topbar.graph_source.as_str()};
         let series=graph_series_for(m,source,store.config.monitoring.topbar_history_seconds);
         json!({"id":m.target.id,"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,source),"tone":topbar_tone(m.overall_state()),"graphColor":m.target.graph_color_for_state(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"visible":m.target.enabled&&m.target.show_in_system_tray,"series":series,"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}}})
     }).collect::<Vec<_>>();
+    if store.config.network_identity_change_notification {
+        items.push(json!({
+            "id":"network-identity",
+            "title":"Network Identity",
+            "tooltip":"Network Identity notifications",
+            "tone":"info",
+            "visible":false,
+            "series":[],
+            "action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
+        }));
+    }
     json!({"items":items})
 }
 fn emit_surfaces(output:&mpsc::Sender<Value>,store:&MonitorStore)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"topbar.update",payload:topbar_value(store)})?;
-    send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray_value(store)})
+    send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray_value(store)})?;
+    send_outbound(output,PluginEvent{message_type:"plugin.event",event:"sidebar.update",payload:json!({
+        "items":[{"id":"target-monitor","visible":store.config.show_in_sidebar}]
+    })})
 }
-fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules})}
+fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules,"networkIdentity":network_identity_value(&store.network_identity)})}
 
 fn main()->Result<(),String>{
     let plugin_id=std::env::var("REMOTEHAND_PLUGIN_ID").map_err(|_|"REMOTEHAND_PLUGIN_ID is missing".to_string())?;
@@ -1123,6 +1544,39 @@ fn main()->Result<(),String>{
     let store=Arc::new(Mutex::new(MonitorStore::new()));
     let mut host_request_id=1u64;
     ensure_config_loaded(&store,&mut input,&output_tx,&mut host_request_id)?;
+    if let Ok(mut events)=load_history(&mut input,&output_tx,&mut host_request_id){
+        if let Ok(guard)=store.lock(){
+            for event in &mut events {
+                if event.source_label.is_empty() {
+                    event.source_label=event.target_id.as_deref()
+                        .and_then(|id|guard.targets.get(id))
+                        .map(|monitor|source_label(monitor,&event.source))
+                        .unwrap_or_else(||event.source.clone());
+                }
+            }
+            guard.history.replace(events);
+        }
+    }
+    if let Ok(result)=host_request(&mut input,&output_tx,&mut host_request_id,"network.interfaces",json!({})) {
+        if let Ok(mut guard)=store.lock() {
+            guard.network_identity.interfaces=result.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default();
+        }
+    }
+    {
+        let public_store=Arc::clone(&store);
+        let public_output=output_tx.clone();
+        thread::spawn(move||{
+            let result=lookup_public_ip();
+            if let Ok(mut guard)=public_store.lock() {
+                match result {
+                    Ok(address)=>{guard.network_identity.public_ip=Some(address);guard.network_identity.public_ip_error=None;}
+                    Err(error)=>{guard.network_identity.public_ip=None;guard.network_identity.public_ip_error=Some(error);}
+                }
+                guard.network_identity.updated_at=Some(now_ms());
+                let _=emit_surfaces(&public_output,&guard);
+            }
+        });
+    }
     {
         let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
         send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"monitor.ready",payload:status_value(&guard)})?;
@@ -1140,10 +1594,11 @@ fn main()->Result<(),String>{
                 let ping=sample_ping(&target);
                 let payload={
                     let mut guard=match ping_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let history=guard.history.clone();
                     let Some(current)=guard.targets.get_mut(&id) else{continue};
                     if current.target!=target{continue}
                     let transition=current.record_ping(&ping,retention);
-                    legacy_alert(&ping_output,current,&legacy,transition);
+                    legacy_alert(&ping_output,&history,current,&legacy,transition);
                     Some(current.summary())
                 };
                 if let Some(payload)=payload{let _=send_outbound(&ping_output,PluginEvent{message_type:"plugin.event",event:"monitor.sampled",payload});}
@@ -1164,11 +1619,12 @@ fn main()->Result<(),String>{
                 let results=target.tcp_checks.iter().filter(|x|x.enabled).map(|check|(check.clone(),sample_tcp(&target,check))).collect::<Vec<_>>();
                 let payload={
                     let mut guard=match tcp_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let history=guard.history.clone();
                     let Some(current)=guard.targets.get_mut(&id) else{continue};
                     if current.target!=target{continue}
                     for (check,result) in results {
                         if let Some(ms)=result.latency_ms{current.record_metric(&format!("tcp:{}.latency",check.id),ms,result.timestamp,retention);}
-                        evaluate_rules(&tcp_output,current,&rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
+                        evaluate_rules(&tcp_output,&history,current,&rules,&format!("tcp:{}.reachable",check.id),Value::Bool(result.reachable),&check.alert_rule_ids);
                         current.tcp_results.insert(check.id.clone(),result);
                     }
                     Some(current.summary())
@@ -1191,6 +1647,7 @@ fn main()->Result<(),String>{
                 let results=target.http_checks.iter().filter(|x|x.enabled).map(|check|(check.clone(),sample_http(check))).collect::<Vec<_>>();
                 let payload={
                     let mut guard=match http_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let history=guard.history.clone();
                     let Some(current)=guard.targets.get_mut(&id) else{continue};
                     if current.target!=target{continue}
                     for (check,result) in results {
@@ -1198,9 +1655,9 @@ fn main()->Result<(),String>{
                         for (field,value) in &result.fields {
                             let source=format!("http:{}.{}",check.id,field);
                             if let Some(v)=numeric(value){current.record_metric(&source,v,result.timestamp,retention);}
-                            if let Some(ids)=check.field_alerts.get(field){evaluate_rules(&http_output,current,&rules,&source,value.clone(),ids);}
+                            if let Some(ids)=check.field_alerts.get(field){evaluate_rules(&http_output,&history,current,&rules,&source,value.clone(),ids);}
                         }
-                        if check.detect_changes{evaluate_rules(&http_output,current,&rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[]));}
+                        if check.detect_changes{evaluate_rules(&http_output,&history,current,&rules,&format!("http:{}.response",check.id),Value::String(result.body.clone()),check.field_alerts.get("response").map(Vec::as_slice).unwrap_or(&[]));}
                         current.http_results.insert(check.id.clone(),result);
                     }
                     Some(current.summary())
@@ -1216,7 +1673,76 @@ fn main()->Result<(),String>{
         let request:HostRequest=serde_json::from_slice(&payload).map_err(|e|format!("invalid host.request: {e}"))?;
         if request.message_type!="host.request"{return Err("unexpected host message type".into());}
         let response=match request.method.as_str(){
-            "monitor.status"=>{let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}}
+            "monitor.network.identity"=>{
+                let interfaces=host_request(&mut input,&output_tx,&mut host_request_id,"network.interfaces",json!({}));
+                match interfaces {
+                    Ok(interfaces)=>{
+                        let (public_ip,public_ip_error)=match lookup_public_ip(){Ok(address)=>(Some(address),None),Err(error)=>(None,Some(error))};
+                        let identity=NetworkIdentity{
+                            public_ip,public_ip_error,
+                            interfaces:interfaces.get("interfaces").and_then(Value::as_array).cloned().unwrap_or_default(),
+                            updated_at:Some(now_ms()),
+                        };
+                        if let Ok(mut guard)=store.lock(){
+                            let previous=guard.network_identity.clone();
+                            handle_network_identity_change(&output_tx,&guard.history,&guard.config,&previous,&identity);
+                            guard.network_identity=identity.clone();
+                            let _=emit_surfaces(&output_tx,&guard);
+                        }
+                        let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                        let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                        PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:network_identity_value(&identity),error:String::new()}
+                    }
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
+            "monitor.clipboard.write"=>{
+                let text=request.params.get("text").and_then(Value::as_str).unwrap_or("");
+                if text.is_empty()||text.len()>4096 {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"clipboard text must be 1-4096 bytes".into()}
+                } else {
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"clipboard.write",json!({"text":text})) {
+                        Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
+            "monitor.file.save"=>{
+                let suggested_name=request.params.get("suggestedName").and_then(Value::as_str).unwrap_or("");
+                let content=request.params.get("content").and_then(Value::as_str).unwrap_or("");
+                if suggested_name.is_empty() || suggested_name.len()>255 {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"suggested file name is missing or too long".into()}
+                } else if content.len()>8*1024*1024 {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"export exceeds 8 MiB".into()}
+                } else {
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({
+                        "suggestedName":suggested_name,
+                        "content":content,
+                        "filters":[{"name":"CSV","extensions":["csv"]}]
+                    })) {
+                        Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
+            "monitor.status"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}
+            }
+            "monitor.history.query"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:history_query(&rows,&request.params,false),error:String::new()}
+            }
+            "monitor.history.export"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:history_query(&rows,&request.params,true),error:String::new()}
+            }
             "monitor.config.set"=>{
                 let config:Result<StoredConfig,_>=serde_json::from_value(request.params.clone());
                 match config.map_err(|e|format!("invalid config: {e}")).and_then(normalize_config){
@@ -1242,7 +1768,80 @@ fn main()->Result<(),String>{
                 let _=emit_surfaces(&output_tx,&guard);
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"acknowledged":true}),error:String::new()}
             }
-            "monitor.shutdown"=>{let response=PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"stopped":true}),error:String::new()};send_outbound(&output_tx,response)?;break}
+            "monitor.network.identity.test"=>{
+                let sound=request.params.get("sound").and_then(Value::as_bool).unwrap_or(false);
+                let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
+                if notify{emit_network_identity_test_notification(&output_tx);}
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                record_history(&output_tx,&history,HistoryEvent{
+                    id:history_id("test"),timestamp:now_ms(),target_id:None,target_name:None,event_type:"Test".into(),
+                    source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity alert test".into(),
+                    value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),
+                    sound,notification:notify,acknowledged:false,reminder:false,details:"User-triggered test".into(),
+                });
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notify}),error:String::new()}
+            }
+            "monitor.rule.test"=>{
+                let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
+                let rule_name=request.params.get("ruleName").and_then(Value::as_str).unwrap_or("Reusable alert");
+                let sound=request.params.get("sound").and_then(Value::as_bool).unwrap_or(false);
+                let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                let monitor=guard.targets.get(target_id);
+                let notified=notify && monitor.map(|m|m.target.show_alert_notifications).unwrap_or(false);
+                if notified {
+                    if let Some(monitor)=monitor { emit_rule_test_notification(&output_tx,monitor,rule_name); }
+                }
+                let (target_id_value,target_name_value)=match monitor {
+                    Some(monitor)=>(Some(monitor.target.id.clone()),Some(monitor.target.name.clone())),
+                    None=>(None,None),
+                };
+                let history=guard.history.clone();
+                drop(guard);
+                record_history(&output_tx,&history,HistoryEvent{
+                    id:history_id("test"),timestamp:now_ms(),target_id:target_id_value,target_name:target_name_value,event_type:"Test".into(),
+                    source:"reusable.alert".into(),source_label:"Reusable alerts".into(),name:format!("{rule_name} test"),
+                    value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),
+                    sound,notification:notified,acknowledged:false,reminder:false,details:"User-triggered test".into(),
+                });
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notified}),error:String::new()}
+            }
+            "monitor.alert.test"=>{
+                let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
+                let kind=request.params.get("kind").and_then(Value::as_str).unwrap_or("");
+                let sound=request.params.get("sound").and_then(Value::as_bool).unwrap_or(false);
+                let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                let monitor=guard.targets.get(target_id);
+                let notified=notify && monitor.map(|m|m.target.show_alert_notifications).unwrap_or(false);
+                if notified {
+                    if let Some(monitor)=monitor { emit_legacy_test_notification(&output_tx,monitor,kind); }
+                }
+                let (label,target_id_value,target_name_value)=match monitor {
+                    Some(monitor)=>{
+                        let label=match kind{"highLatency"=>"High latency","offline"=>"Offline","recovery"=>"Recovery",_=>"Ping alert"};
+                        (label.to_string(),Some(monitor.target.id.clone()),Some(monitor.target.name.clone()))
+                    }
+                    None=>{
+                        let label=match kind{"highLatency"=>"High latency","offline"=>"Offline","recovery"=>"Recovery",_=>"Ping alert"};
+                        (label.to_string(),None,None)
+                    }
+                };
+                let history=guard.history.clone();
+                drop(guard);
+                record_history(&output_tx,&history,HistoryEvent{
+                    id:history_id("test"),timestamp:now_ms(),target_id:target_id_value,target_name:target_name_value,event_type:"Test".into(),
+                    source:"ping.alert".into(),source_label:"Ping alerts".into(),name:format!("{label} test"),
+                    value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),
+                    sound,notification:notified,acknowledged:false,reminder:false,details:"User-triggered test".into(),
+                });
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notified}),error:String::new()}
+            }
+            "monitor.shutdown"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let response=PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"stopped":true}),error:String::new()};send_outbound(&output_tx,response)?;break
+            }
             _=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:format!("unsupported Target Monitor method: {}",request.method)}
         };
         send_outbound(&output_tx,response)?;
@@ -1253,16 +1852,38 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn network_identity_change_alerts_default_off(){let c=default_config();assert!(!c.network_identity_change_sound);assert!(!c.network_identity_change_notification);assert!(c.network_identity_change_sound_config.is_none());}
+    #[test] fn network_identity_custom_sound_counts_toward_sound_budget(){let mut c=default_config();c.network_identity_change_sound_config=Some(SoundConfig{filename:"test.wav".into(),mime:"audio/wav".into(),data_url:"data:audio/wav;base64,AA==".into(),size_bytes:1024,duration_ms:500});assert!(validate_config(&c).is_ok());}
+    #[test] fn network_identity_initial_snapshot_is_not_a_change(){let mut first=NetworkIdentity::default();first.public_ip=Some("203.0.113.1".into());assert!(network_identity_change_details(&NetworkIdentity::default(),&first).is_empty());}
+    #[test] fn network_identity_change_detects_public_ip_update(){let mut a=NetworkIdentity::default();a.public_ip=Some("203.0.113.1".into());a.updated_at=Some(1);let mut b=a.clone();b.public_ip=Some("203.0.113.2".into());b.updated_at=Some(2);assert_eq!(network_identity_change_details(&a,&b).len(),1);}
+    #[test] fn history_source_uses_human_label(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::new()});let event=target_history_event(monitor,"Alert","http:api.temp","Hot","65".into(),"Triggered",false,false,false,String::new());assert_eq!(event.source_label,"System Info · temp");}
+    #[test] fn history_query_filters_and_sorts(){let events=vec![
+        HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),source_label:"Ping latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
+        HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
+    ];let q=history_query(&events,&json!({"eventType":"Alert","page":1,"pageSize":25}),false);assert_eq!(q["total"],1);assert_eq!(q["rows"][0]["id"],"1");}
+
+    #[test] fn sidebar_visibility_defaults_on_for_backward_compatibility(){let c=default_config();assert!(c.show_in_sidebar);}
+    #[test] fn network_identity_refresh_defaults_are_backward_compatible(){let c=default_config();assert!(c.network_identity_auto_refresh);assert_eq!(c.network_identity_refresh_seconds,300);}
+    #[test] fn network_identity_refresh_interval_is_bounded_to_supported_values(){let mut c=default_config();c.network_identity_refresh_seconds=42;assert!(validate_config(&c).is_err());c.network_identity_refresh_seconds=600;assert!(validate_config(&c).is_ok());}
+    #[test] fn network_identity_topbar_can_be_hidden(){let s=MonitorStore::new();let items=topbar_value(&s)["items"].as_array().unwrap().clone();assert!(items.iter().all(|item|item["id"]!="target-monitor:network-identity"));}
+    #[test] fn network_identity_topbar_contains_public_ip(){let mut s=MonitorStore::new();s.config.show_network_identity_topbar=true;s.network_identity.public_ip=Some("203.0.113.10".into());let items=topbar_value(&s)["items"].as_array().unwrap().clone();let item=items.iter().find(|item|item["id"]=="target-monitor:network-identity").unwrap();assert_eq!(item["content"]["label"],"203.0.113.10");assert_eq!(item["menu"]["items"][0]["action"]["method"],"monitor.clipboard.write");}
+    #[test] fn network_identity_topbar_uses_selected_interface(){let mut s=MonitorStore::new();s.config.show_network_identity_topbar=true;s.config.network_identity_topbar_source="interface:Wi-Fi:ipv4".into();s.network_identity.interfaces=vec![json!({"name":"Wi-Fi","addresses":[{"address":"192.168.1.25","family":"ipv4"}]})];let items=topbar_value(&s)["items"].as_array().unwrap().clone();let item=items.iter().find(|item|item["id"]=="target-monitor:network-identity").unwrap();assert_eq!(item["icon"],"wifi");assert_eq!(item["content"]["label"],"192.168.1.25");}
     #[test] fn time_window_excludes_old_topbar_points(){let mut s=MonitorStore::new();let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();let now=now_ms();m.metric_history.insert("x".into(),vec![MetricRecord{timestamp:now-120000,value:1.0},MetricRecord{timestamp:now,value:2.0}]);let series=graph_series_for(m,"x",60);let numeric=series.iter().filter(|p|p["value"].as_f64().is_some()).collect::<Vec<_>>();assert_eq!(numeric.len(),1);assert_eq!(numeric[0]["value"],json!(2.0));assert!(series.iter().any(|p|p["value"].is_null()));}
     #[test] fn config_rejects_invalid_monitoring_windows(){let mut c=default_config();c.monitoring.http_interval_seconds=0;assert!(validate_config(&c).is_err());c=default_config();c.monitoring.topbar_history_seconds=5;assert!(validate_config(&c).is_err());}
     #[test] fn new_config_uses_split_sampling_defaults(){let c=default_config();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
-    #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
+    #[test] fn legacy_config_without_monitoring_uses_current_defaults(){let raw=json!({"targets":[default_target()],"alerts":LegacyAlertConfig::default(),"alertRules":[],"showNetworkIdentityTopbar":false,"networkIdentityTopbarSource":"public"});let c:StoredConfig=serde_json::from_value(raw).unwrap();assert!(c.show_in_sidebar);assert_eq!(c.monitoring.ping_interval_seconds,2);assert_eq!(c.monitoring.tcp_interval_seconds,5);assert_eq!(c.monitoring.http_interval_seconds,10);assert_eq!(c.monitoring.history_retention_seconds,3600);assert_eq!(c.monitoring.topbar_history_seconds,60);}
     #[test] fn default_config_has_one_ping_target(){let c=default_config();assert_eq!(c.targets.len(),1);assert!(c.targets[0].ping_enabled);}
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
-    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn reusable_alert_names_must_be_unique_case_insensitively(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();b.name="hightemp".into();c.alert_rules=vec![a,b];assert!(validate_config(&c).is_err());}
+    #[test] fn legacy_duplicate_reusable_alert_names_are_migrated(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();c.alert_rules=vec![a,b];assert!(migrate_legacy_rule_names(&mut c));assert_eq!(c.alert_rules[0].name,"HighTemp");assert_eq!(c.alert_rules[1].name,"HighTemp (2)");assert!(validate_config(&c).is_ok());}
+    #[test] fn reusable_alert_delivery_defaults_on_for_backward_compatibility(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(rule.sound_enabled);assert!(rule.notification_enabled);}
+    #[test] fn reusable_alert_delivery_channels_can_be_disabled_independently(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"soundEnabled":false,"notificationEnabled":true,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.sound_enabled);assert!(rule.notification_enabled);}
     #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
-    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
+    #[test] fn legacy_alert_channel_flags_fall_back_to_old_enabled_field(){let enabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":true,"cooldownSeconds":60,"sound":null})).unwrap();assert!(enabled.sound_enabled());assert!(enabled.notification_enabled());let disabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(!disabled.sound_enabled());assert!(!disabled.notification_enabled());}
+    #[test] fn legacy_alert_channel_flags_can_be_independent(){let rule:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"soundEnabled":true,"notificationEnabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(rule.sound_enabled());assert!(!rule.notification_enabled());}
+    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn source_formatting_applies_to_display_without_changing_raw_value(){
         let mut s=MonitorStore::new();
@@ -1313,6 +1934,18 @@ mod tests {
         assert!(tooltip.contains("Value: Ping latency = 12.0 ms"));
         assert!(tooltip.contains("Graph: Ping latency · last 12.0 ms"));
     }
+    #[test] fn test_history_events_are_identifiable(){
+        let event=HistoryEvent{id:"x".into(),timestamp:1,target_id:None,target_name:None,event_type:"Test".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity alert test".into(),value:String::new(),old_value:String::new(),new_value:String::new(),status:"Test".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:"User-triggered test".into()};
+        assert_eq!(event.event_type,"Test");assert_eq!(event.status,"Test");assert!(event.sound);assert!(event.notification);
+    }
+    #[test] fn network_identity_notification_keeps_hidden_tray_handle(){
+        let mut s=MonitorStore::new();
+        s.config.network_identity_change_notification=true;
+        let tray=tray_value(&s);
+        let item=tray["items"].as_array().unwrap().iter().find(|item|item["id"]=="network-identity").unwrap();
+        assert_eq!(item["visible"],json!(false));
+        assert_eq!(item["action"]["context"]["view"],json!("network"));
+    }
     #[test] fn notification_enabled_target_keeps_hidden_tray_handle(){
         let mut s=MonitorStore::new();
         {
@@ -1323,6 +1956,14 @@ mod tests {
         let tray=tray_value(&s);
         assert_eq!(tray["items"].as_array().unwrap().len(),1);
         assert_eq!(tray["items"][0]["visible"],json!(false));
+    }
+    #[test] fn legacy_test_notification_uses_target_notification_gate(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.show_alert_notifications=false;
+        assert!(!m.target.show_alert_notifications);
+        m.target.show_alert_notifications=true;
+        assert!(m.target.show_alert_notifications);
     }
     #[test] fn notification_payload_targets_report_action(){
         let mut s=MonitorStore::new();
@@ -1411,7 +2052,7 @@ mod tests {
     #[test] fn replace_config_prunes_active_alert_when_rule_is_deleted(){
         let mut s=MonitorStore::new();
         let mut c=s.config.clone();
-        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
         c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
@@ -1431,7 +2072,7 @@ mod tests {
     #[test] fn replace_config_prunes_active_alert_when_source_is_unassigned(){
         let mut s=MonitorStore::new();
         let mut c=s.config.clone();
-        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
         c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
