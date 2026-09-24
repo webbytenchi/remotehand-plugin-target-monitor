@@ -4,6 +4,37 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.2 - 2026-09-24
+
+### Added
+
+- **Exposed HTTP fields.** HTTP Test / Preview now lets each discovered field be marked Expose independently of alert assignment.
+- **Concise Target Report HTTP details.** Target Reports now show only fields explicitly exposed for each HTTP request, in configured order.
+- **Top-bar hover details for exposed fields.** Exposed HTTP values are included in the target's top-bar tooltip, with unavailable values shown as an em dash.
+
+### Improved
+
+- Exposed-field selections persist with the HTTP request and remain selected across Test / Preview filtering and pagination.
+- Exposed fields remain configured even if a later response temporarily omits the field, so transient schema/value changes do not silently discard presentation choices.
+- HTTP report presentation is intentionally concise instead of repeating the full searchable/paginated discovered-field table.
+
+### Fixed
+
+- Reusable alert rules using the `changed` operator now hide the entire Comparison value control because change detection does not use a comparison value.
+- Switching from `changed` back to another operator restores the Comparison value control without changing rule semantics.
+
+### Compatibility
+
+- Existing saved HTTP checks remain compatible; missing `exposed_fields` data defaults to an empty list.
+- Exposure affects presentation only. Monitoring, extraction, graphing, and alert evaluation continue to use the underlying field data independently.
+
+### Verification
+
+- Windows Rust validation passed with **51 tests and 0 failures**.
+- Optimized Windows plugin package built successfully.
+- Manual packaged-plugin acceptance confirmed exposed fields appear in Target Reports and top-bar hover details.
+- Manual acceptance confirmed the RemoteHand v1.2.10 host-rendered tooltip remains stable while the live top-bar graph updates.
+
 ## 0.7.1 - 2026-09-24
 
 ### Added
