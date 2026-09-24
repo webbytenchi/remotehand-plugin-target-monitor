@@ -4,6 +4,19 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.3 - 2026-09-25
+
+### Fixed
+
+- System-tray updates now cap tooltips to RemoteHand's 256-byte host limit, preserving UTF-8 boundaries instead of allowing an oversized tooltip to make later tray updates get rejected.
+- System-tray graph payloads now keep only the newest 60 points, matching the RemoteHand tray API limit even when the configured graph-history window contains more samples.
+- Added regression coverage for UTF-8-safe tooltip truncation and newest-point retention.
+
+### Compatibility
+
+- No saved configuration migration is required.
+- Monitoring, alerts, reports, top-bar content, and exposed HTTP field semantics are unchanged.
+
 ## 0.7.2 - 2026-09-24
 
 ### Added
