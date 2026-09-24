@@ -1662,6 +1662,24 @@ fn main()->Result<(),String>{
                     }
                 }
             }
+            "monitor.file.save"=>{
+                let suggested_name=request.params.get("suggestedName").and_then(Value::as_str).unwrap_or("");
+                let content=request.params.get("content").and_then(Value::as_str).unwrap_or("");
+                if suggested_name.is_empty() || suggested_name.len()>255 {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"suggested file name is missing or too long".into()}
+                } else if content.len()>8*1024*1024 {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"export exceeds 8 MiB".into()}
+                } else {
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({
+                        "suggestedName":suggested_name,
+                        "content":content,
+                        "filters":[{"name":"CSV","extensions":["csv"]}]
+                    })) {
+                        Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
             "monitor.status"=>{
                 let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
                 let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
