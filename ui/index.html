@@ -85,6 +85,14 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
       <label class="checkline"><input id="networkIdentityAutoRefresh" type="checkbox"> Auto refresh Network Identity</label>
       <div class="field"><label>Refresh interval</label><select id="networkIdentityRefreshSeconds"><option value="60">1 minute</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></div>
     </div>
+    <div class="subbox">
+      <h3>Change alerts</h3>
+      <div class="network-identity-controls">
+        <label class="checkline"><input id="networkIdentityChangeSound" type="checkbox"> Sound when Network Identity changes</label>
+        <label class="checkline"><input id="networkIdentityChangeNotification" type="checkbox"> Native notification when Network Identity changes</label>
+      </div>
+      <p class="muted">The first snapshot establishes the baseline and never alerts. Later meaningful Public IP, interface, MAC, IPv4, or IPv6 changes are always recorded in History; sound and notification are optional.</p>
+    </div>
     <p class="muted">When auto refresh is off, Network Identity is still loaded once at RemoteHand startup and can be refreshed manually. Network Identity uses RemoteHand's generic network interface API. Public IP is resolved separately by Target Monitor.</p>
   </div>
 </section>
