@@ -416,6 +416,8 @@ struct StoredConfig {
     network_identity_change_sound: bool,
     #[serde(default = "default_false")]
     network_identity_change_notification: bool,
+    #[serde(default)]
+    network_identity_change_sound_config: Option<SoundConfig>,
 }
 impl Default for StoredConfig {
     fn default() -> Self { default_config() }
@@ -761,6 +763,7 @@ fn default_config() -> StoredConfig {
         network_identity_refresh_seconds: default_network_identity_refresh_seconds(),
         network_identity_change_sound: false,
         network_identity_change_notification: false,
+        network_identity_change_sound_config: None,
     }
 }
 
@@ -816,6 +819,7 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     for legacy in [&config.alerts.high_latency, &config.alerts.offline, &config.alerts.recovery] {
         if let Some(sound) = &legacy.sound { validate_sound(sound)?; sound_total += sound.size_bytes; }
     }
+    if let Some(sound)=&config.network_identity_change_sound_config { validate_sound(sound)?; sound_total += sound.size_bytes; }
     if sound_total > MAX_TOTAL_SOUND_BYTES { return Err("total alert sounds exceed 12 MiB".into()); }
     for target in &config.targets {
         if target.id.trim().is_empty() || !target_ids.insert(target.id.clone()) { return Err("target ids must be unique and non-empty".into()); }
@@ -990,6 +994,13 @@ fn emit_network_identity_notification(output:&mpsc::Sender<Value>,details:&str){
         "tone":"warning","silent":true,"action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
     })});
 }
+fn emit_network_identity_test_notification(output:&mpsc::Sender<Value>){
+    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
+        "itemId":"network-identity-test","title":"Network Identity · Test","body":"Target Monitor test notification",
+        "tone":"warning","silent":true,"action":{"type":"open-panel","panel":"target-monitor","context":{"view":"network"}}
+    })});
+}
+
 fn handle_network_identity_change(output:&mpsc::Sender<Value>,history:&HistoryState,config:&StoredConfig,previous:&NetworkIdentity,next:&NetworkIdentity){
     let changes=network_identity_change_details(previous,next);
     if changes.is_empty(){return;}
@@ -1003,7 +1014,9 @@ fn handle_network_identity_change(output:&mpsc::Sender<Value>,history:&HistorySt
     });
     if sound{
         let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
-            "alertType":"networkIdentityChanged","ruleName":"Network Identity changed","source":"Network Identity","playSound":true,"sound":Value::Null,"fallbackBeep":true
+            "alertType":"networkIdentityChanged","ruleName":"Network Identity changed","source":"Network Identity","playSound":true,
+            "sound":sound_payload(&config.network_identity_change_sound_config),
+            "fallbackBeep":config.network_identity_change_sound_config.is_none()
         })});
     }
     if notification{emit_network_identity_notification(output,&details);}
@@ -1668,6 +1681,11 @@ fn main()->Result<(),String>{
                 let _=emit_surfaces(&output_tx,&guard);
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"acknowledged":true}),error:String::new()}
             }
+            "monitor.network.identity.test"=>{
+                let notify=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
+                if notify{emit_network_identity_test_notification(&output_tx);}
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"notified":notify}),error:String::new()}
+            }
             "monitor.alert.test"=>{
                 let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
                 let kind=request.params.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -1696,7 +1714,8 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn network_identity_change_alerts_default_off(){let c=default_config();assert!(!c.network_identity_change_sound);assert!(!c.network_identity_change_notification);}
+    #[test] fn network_identity_change_alerts_default_off(){let c=default_config();assert!(!c.network_identity_change_sound);assert!(!c.network_identity_change_notification);assert!(c.network_identity_change_sound_config.is_none());}
+    #[test] fn network_identity_custom_sound_counts_toward_sound_budget(){let mut c=default_config();c.network_identity_change_sound_config=Some(SoundConfig{filename:"test.wav".into(),mime:"audio/wav".into(),data_url:"data:audio/wav;base64,AA==".into(),size_bytes:1024,duration_ms:500});assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_initial_snapshot_is_not_a_change(){let mut first=NetworkIdentity::default();first.public_ip=Some("203.0.113.1".into());assert!(network_identity_change_details(&NetworkIdentity::default(),&first).is_empty());}
     #[test] fn network_identity_change_detects_public_ip_update(){let mut a=NetworkIdentity::default();a.public_ip=Some("203.0.113.1".into());a.updated_at=Some(1);let mut b=a.clone();b.public_ip=Some("203.0.113.2".into());b.updated_at=Some(2);assert_eq!(network_identity_change_details(&a,&b).len(),1);}
     #[test] fn history_query_filters_and_sorts(){let events=vec![
