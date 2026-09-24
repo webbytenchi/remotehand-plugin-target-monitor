@@ -24,7 +24,10 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - configurable top-bar Title, Value, and Graph sources
 - separate normal/alert colors for the top-bar Value
 - configurable monitoring intervals and history retention
-- target reports with Ping, TCP, HTTP, and active-alert detail
+- target reports with Ping, TCP, HTTP, active-alert, and recent-history detail
+- persistent unified alert / notification / Network Identity History
+- lazy-loaded, sortable, filterable, paginated History with CSV export
+- restored Network Identity with configurable auto refresh and change alerts
 - per-target system-tray graph contributions
 
 See `V0.7.0-DESIGN.md` for the delivered product model.
@@ -254,8 +257,47 @@ Each target has a report containing:
 - HTTP / HTTPS check results
 - extracted HTTP fields
 - configured and active alerts
+- the ten most recent persisted History events for that target
 
 HTTP field tables support search, filtering, and pagination.
+
+## History
+
+Target Monitor maintains a bounded persistent event history for operational events including:
+
+- Ping High latency / Offline / Recovery events and reminders
+- reusable alert triggers, reminders, and resolutions
+- Network Identity changes
+
+History is separate from delivery. An event may be recorded even when Sound and Notification delivery are disabled.
+
+The History tab is lazy-loaded and supports:
+
+- pagination
+- search
+- target, type, source, status, and date/time filters
+- sortable columns
+- CSV export of the complete current filtered/sorted result set rather than only the visible page
+
+History currently retains the newest 10,000 events in plugin-scoped storage.
+
+## Network Identity
+
+Network Identity shows:
+
+- Public IP
+- local interfaces
+- MAC addresses
+- IPv4 and IPv6 addresses
+- a selectable top-bar address
+- copy actions
+- manual refresh
+
+Auto refresh is enabled by default every five minutes and may be disabled or set to 1, 5, 10, 30, or 60 minutes. When disabled, the startup snapshot still loads once and manual Refresh remains available.
+
+The UI shows the local Last updated timestamp. Successful refreshes also republish the Network Identity top-bar contribution so changed values are reflected there.
+
+Meaningful changes can optionally play a sound and/or show a native notification. The initial snapshot establishes the baseline and never generates a change alert. Later changes are recorded in History even if both delivery channels are disabled.
 
 ## Monitoring settings
 
