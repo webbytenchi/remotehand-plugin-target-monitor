@@ -153,3 +153,5 @@ The codebase starts from the validated Host Monitor v0.6.1 implementation, with 
 RemoteHand Host Monitor v0.6.1 is the historical predecessor.
 
 RemoteHand Target Monitor continues from that validated foundation in a new repository and product line.
+
+- Packaged-plugin UI smoke passed for the latest reusable alert assignment polish, including unique names, master enable/disable, disabled assignment visibility, compact picker indicators, and stable expanded assignment details.
