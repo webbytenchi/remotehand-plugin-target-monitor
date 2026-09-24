@@ -1232,10 +1232,12 @@ fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut T
     if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
     monitor.last_legacy_alert_at.insert(kind.to_string(),now);
     let target=&monitor.target;
-    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
-        "targetId":target.id,"targetName":target.name,"alertType":kind,"ruleName":label,"source":"ping.latency",
-        "reminder":reminder,"playSound":play_sound,"sound":sound_payload(&rule.sound),"fallbackBeep":play_sound && rule.sound.is_none()
-    })});
+    if play_sound || rule.notification_enabled() {
+        let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
+            "targetId":target.id,"targetName":target.name,"alertType":kind,"ruleName":label,"source":"ping.latency",
+            "reminder":reminder,"playSound":play_sound,"sound":sound_payload(&rule.sound),"fallbackBeep":play_sound && rule.sound.is_none()
+        })});
+    }
     if rule.notification_enabled(){emit_legacy_notification(output,monitor,kind,reminder);}
     record_history(output,history,target_history_event(monitor,"Ping", "ping.latency",label,formatted_source_value(monitor,"ping.latency",true),if reminder{"Reminder"}else if kind=="recovery"{"Recovered"}else{"Triggered"},play_sound,show_notification,reminder,String::new())));
 }
