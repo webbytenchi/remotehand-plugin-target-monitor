@@ -455,6 +455,18 @@ $("historyPrev").onclick=()=>{if(historyState.page>1){historyState.page--;void l
 $("historyNext").onclick=()=>{const pages=Math.max(1,Math.ceil(historyState.total/historyState.pageSize));if(historyState.page<pages){historyState.page++;void loadHistory(true)}};
 document.querySelectorAll("[data-history-sort]").forEach(th=>th.onclick=()=>{const key=th.dataset.historySort;if(historyState.sortBy===key)historyState.sortDir=historyState.sortDir==="asc"?"desc":"asc";else{historyState.sortBy=key;historyState.sortDir=key==="timestamp"?"desc":"asc"}historyState.page=1;void loadHistory(true)});
 $("historyClear").onclick=()=>{["historySearch","historyFrom","historyTo"].forEach(id=>$(id).value="");["historyTarget","historyType","historySource","historyStatus"].forEach(id=>$(id).value="");historyState.page=1;historyState.sortBy="timestamp";historyState.sortDir="desc";void loadHistory(true)};
+function csvCell(value){const text=String(value??"");return /[",\r\n]/.test(text)?'"'+text.replaceAll('"','""')+'"':text}
+$("historyExport").onclick=async()=>{
+  const button=$("historyExport");button.disabled=true;button.textContent="Exporting…";
+  try{
+    const result=await request("monitor.history.export",historyQueryParams(false)),rows=result.rows||[];
+    const headers=["Timestamp","Target","Event type","Source","Event","Value","Status","Sound","Notification","Acknowledged","Reminder","Details"],lines=[headers.map(csvCell).join(",")];
+    for(const row of rows)lines.push([historyTime(row.timestamp),row.targetName||"",row.eventType||"",row.source||"",row.name||"",row.value||"",row.status||"",row.sound?"Yes":"No",row.notification?"Yes":"No",row.acknowledged?"Yes":"No",row.reminder?"Yes":"No",row.details||""].map(csvCell).join(","));
+    const blob=new Blob(["\ufeff"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a"),date=new Date();
+    const stamp=date.getFullYear()+"-"+String(date.getMonth()+1).padStart(2,"0")+"-"+String(date.getDate()).padStart(2,"0")+"-"+String(date.getHours()).padStart(2,"0")+String(date.getMinutes()).padStart(2,"0");
+    link.href=url;link.download="target-monitor-history-"+stamp+".csv";document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(`Exported ${rows.length} history row${rows.length===1?"":"s"}.`,"success");
+  }catch(e){notice(String(e),"error")}finally{button.disabled=false;button.textContent="Export CSV"}
+};
 function render(){renderTargets();renderRules();renderSettings();renderNetworkIdentity()}
 function countRuleUses(ruleId){let n=0;for(const t of state.config.targets){for(const c of t.tcpChecks||[])if((c.alertRuleIds||[]).includes(ruleId))n++;for(const h of t.httpChecks||[])for(const ids of Object.values(h.fieldAlerts||{}))if(ids.includes(ruleId))n++}return n}
 async function persist(message="Saved."){try{normalizeStatus(await request("monitor.config.set",state.config));notice(message,"success");return true}catch(e){notice(String(e),"error");await refresh();return false}}
