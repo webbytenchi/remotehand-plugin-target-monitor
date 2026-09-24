@@ -262,7 +262,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{max-width
 <script>
 (()=>{"use strict";
 const $=id=>document.getElementById(id), bridge=window.remotehand;let requestChain=Promise.resolve();const request=(method,params={})=>{if(!bridge?.request)return Promise.reject(new Error("plugin bridge unavailable"));const run=()=>bridge.request(method,params);const p=requestChain.then(run,run);requestChain=p.catch(()=>{});return p};
-let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},offline:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},recovery:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null}},alertRules:[]},targets:[]};let editingTarget=null,editingRule=null,editingHttp=null,targetDraft=null,httpPreviewFields=[],httpPreviewPage=1,httpPreviewPageSize=5,detailTargetId=null,contextTargetId=null,editingAlertField=null,reportHttpFilters={},pendingDeleteRuleId=null,legacyDraft=null,legacyDraftDirty=false,settingsDirty=false,graphThresholdSource="",sourceFormatSource="",networkIdentityRefreshTimer=null,networkIdentityRefreshTimerSeconds=0,networkIdentityRefreshing=false,historyLoaded=false,historyLoading=false,historyState={page:1,pageSize:25,total:0,sortBy:"timestamp",sortDir:"desc",facets:{targets:[],eventTypes:[],sources:[],statuses:[]}};let pendingPanelContext=window.__REMOTEHAND_PLUGIN_CONTEXT__||null;
+let state={config:{targets:[],alerts:{enabled:true,highLatency:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},offline:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null},recovery:{enabled:true,soundEnabled:true,notificationEnabled:true,sound:null}},alertRules:[]},targets:[]};const expandedRuleUses=new Set();let editingTarget=null,editingRule=null,editingHttp=null,targetDraft=null,httpPreviewFields=[],httpPreviewPage=1,httpPreviewPageSize=5,detailTargetId=null,contextTargetId=null,editingAlertField=null,reportHttpFilters={},pendingDeleteRuleId=null,legacyDraft=null,legacyDraftDirty=false,settingsDirty=false,graphThresholdSource="",sourceFormatSource="",networkIdentityRefreshTimer=null,networkIdentityRefreshTimerSeconds=0,networkIdentityRefreshing=false,historyLoaded=false,historyLoading=false,historyState={page:1,pageSize:25,total:0,sortBy:"timestamp",sortDir:"desc",facets:{targets:[],eventTypes:[],sources:[],statuses:[]}};let pendingPanelContext=window.__REMOTEHAND_PLUGIN_CONTEXT__||null;
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id=prefix=>prefix+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,8);
 const notice=(m,kind="info")=>{if(kind===true)kind="error";const e=$("notice");$("noticeText").textContent=m||"";e.className="notice"+(kind&&kind!=="info"?" "+kind:"");e.hidden=!m};$("noticeClose").onclick=()=>{const e=$("notice");$("noticeText").textContent="";e.hidden=true};
@@ -326,18 +326,20 @@ function ruleDeliveryHtml(rule){
 }
 function renderRules(){
   const list=$("rulesList"),rules=state.config.alertRules||[];
+  const validRuleIds=new Set(rules.map(r=>r.id));
+  for(const id of [...expandedRuleUses])if(!validRuleIds.has(id))expandedRuleUses.delete(id);
   list.innerHTML=rules.length?"":"<div class='muted'>No reusable alert rules yet.</div>";
   for(const r of rules){
-    const uses=ruleAssignmentLocations(r.id),count=uses.length;
+    const uses=ruleAssignmentLocations(r.id),count=uses.length,expanded=count&&expandedRuleUses.has(r.id);
     const row=document.createElement("div");row.className="rule";
     const useText=count?"Used by "+count+" source"+(count===1?"":"s"):"Not used";
-    const usesHtml=count?"<div class='rule-uses' hidden>"+uses.map(x=>"<div>"+esc(x)+"</div>").join("")+"</div>":"";
-    const useControl=count?"<button class='rule-use-button' type='button' aria-expanded='false'>"+esc(useText)+"</button>":esc(useText);
+    const usesHtml=count?"<div class='rule-uses' "+(expanded?"":"hidden")+">"+uses.map(x=>"<div>"+esc(x)+"</div>").join("")+"</div>":"";
+    const useControl=count?"<button class='rule-use-button' type='button' aria-expanded='"+String(!!expanded)+"'>"+esc(useText)+(expanded?" ▴":" ▾")+"</button>":esc(useText);
     row.innerHTML="<div><b>"+esc(r.name)+"</b>"+ruleDeliveryHtml(r)+"</div><div><span class='pill'>"+esc(r.operator)+"</span> "+(r.operator==="changed"?"":esc(valueText(r.value)))+"</div><div class='muted'>"+useControl+"</div><div><button class='btn edit'>Edit</button> <button class='btn danger delete'>Delete</button></div>"+usesHtml;
     row.querySelector(".edit").onclick=()=>editRule(r.id);
     row.querySelector(".delete").onclick=()=>removeRule(r.id);
     const useButton=row.querySelector(".rule-use-button"),useList=row.querySelector(".rule-uses");
-    if(useButton&&useList)useButton.onclick=()=>{const expanded=useButton.getAttribute("aria-expanded")==="true";useButton.setAttribute("aria-expanded",String(!expanded));useButton.textContent=useText+(expanded?"":" ▾");useList.hidden=expanded};
+    if(useButton&&useList)useButton.onclick=()=>{const next=!expandedRuleUses.has(r.id);if(next)expandedRuleUses.add(r.id);else expandedRuleUses.delete(r.id);useButton.setAttribute("aria-expanded",String(next));useButton.textContent=useText+(next?" ▴":" ▾");useList.hidden=!next};
     list.appendChild(row);
   }
   renderLegacy()
