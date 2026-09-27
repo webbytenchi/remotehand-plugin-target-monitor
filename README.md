@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.5** is the current Target Monitor release.
+**Target Monitor v0.7.6** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -24,7 +24,7 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - configurable top-bar Title, Value, and Graph sources
 - separate normal/alert colors for the top-bar Value
 - configurable monitoring intervals and history retention
-- target reports with Ping, TCP, HTTP, active-alert, and recent-history detail
+- target reports with Ping, TCP, HTTP, configured field alerts, retained-History trigger statistics, active-alert, and recent-history detail
 - persistent unified alert / notification / Network Identity History
 - lazy-loaded, sortable, filterable, paginated History with CSV export
 - restored Network Identity with configurable auto refresh and change alerts
@@ -239,7 +239,7 @@ If the condition triggers again after resolving, it becomes a new alert event.
 
 ## Native notifications
 
-Target Monitor v0.7.5 can request native Windows notifications through RemoteHand's generic plugin notification capability.
+Target Monitor v0.7.6 can request native Windows notifications through RemoteHand's generic plugin notification capability.
 
 Per target, the user may independently choose:
 
@@ -271,6 +271,8 @@ Each target has a report containing:
 - the ten most recent persisted History events for that target
 
 For HTTP / HTTPS checks, Target Reports show only fields explicitly marked Expose. Missing exposed values are shown as an em dash while the exposure choice remains configured.
+
+Exposed HTTP field tables also show any reusable alert rules assigned to each field, plus **Triggered** and **Last triggered** statistics for each configured rule. These statistics are derived from retained persistent History: reminders are excluded from the trigger count, and the values represent retained History rather than lifetime totals.
 
 ## History
 
@@ -413,7 +415,7 @@ The clean Windows package directory is created at:
 
 The Windows build script also creates the versioned release ZIP and checksum file directly, for example:
 
-    dist\remotehand-target-monitor-v0.7.5-windows-x86_64.zip
+    dist\remotehand-target-monitor-v0.7.6-windows-x86_64.zip
     dist\SHA256SUMS.txt
 
 Install the package directory during development, or use the versioned ZIP through RemoteHand's ZIP install flow.
@@ -434,7 +436,7 @@ Panel ID:
 
 Current release version:
 
-    0.7.5
+    0.7.6
 
 ## Lineage
 
@@ -442,7 +444,7 @@ Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase
 
 Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor continues that product line as **v0.7.5**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+Target Monitor continues that product line as **v0.7.6**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
 
 ## Future alert delivery
 
