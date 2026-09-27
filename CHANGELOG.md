@@ -4,6 +4,37 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.5 - 2026-09-27
+
+### Added
+
+- Added a reusable alert operator shown as **didn't change** for monitored values that are expected to keep changing.
+- The operator uses a configurable **For** duration in seconds and becomes active only after the source value remains unchanged continuously for that duration.
+- Any value change immediately resets the unchanged-duration timer.
+
+### Fixed
+
+- The reusable alert editor now fully hides the Comparison value field for the existing `changed` operator.
+- Selecting **didn't change** replaces Comparison value with a dedicated **For ... seconds** control rather than overloading the comparison value.
+- Hidden alert-rule fields now reliably stay hidden even with the shared field layout styles.
+
+### Improved
+
+- Reusable rule validation treats `changed` and `unchanged` as comparison-value-free operators while preserving existing numeric and equality operators.
+- The Windows packaging script now derives the release ZIP version from `plugin.json` and creates the final versioned filename directly instead of a `-test-` validation filename.
+
+### Compatibility
+
+- Existing saved alert rules remain compatible.
+- The new unchanged-duration setting defaults to 30 seconds when absent.
+- RemoteHand core and Plugin API v1 are unchanged.
+
+### Verification
+
+- Windows Rust validation passed with **57 tests and 0 failures**.
+- New regression coverage verifies unchanged-duration activation, timer reset after a value change, and configuration without a comparison value.
+- Manual acceptance confirmed `changed` shows no extra value field, **didn't change** shows a **For ... seconds** field, and the unchanged-duration behavior triggers and resets as intended.
+
 ## 0.7.4 - 2026-09-25
 
 ### Added
