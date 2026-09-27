@@ -1158,6 +1158,26 @@ fn history_query(events:&[HistoryEvent],params:&Value,export_all:bool)->Value{
     }})
 }
 
+fn alert_trigger_stats(events:&[HistoryEvent],target_id:&str)->Value{
+    let mut stats:BTreeMap<(String,String),(u64,u64)>=BTreeMap::new();
+    for event in events {
+        if event.target_id.as_deref()!=Some(target_id)
+            || event.event_type!="Alert"
+            || event.status!="Triggered"
+            || event.reminder
+        { continue; }
+        let entry=stats.entry((event.source.clone(),event.name.clone())).or_insert((0,0));
+        entry.0=entry.0.saturating_add(1);
+        entry.1=entry.1.max(event.timestamp);
+    }
+    json!({"rows":stats.into_iter().map(|((source,name),(count,last_triggered))|json!({
+        "source":source,
+        "name":name,
+        "count":count,
+        "lastTriggered":last_triggered
+    })).collect::<Vec<_>>()})
+}
+
 
 fn resolve_target(target:&str)->Result<IpAddr,String>{
     let target=target.trim();
@@ -1823,6 +1843,13 @@ fn main()->Result<(),String>{
                 let rows=history.snapshot();
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:history_query(&rows,&request.params,true),error:String::new()}
             }
+            "monitor.alert.stats"=>{
+                let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:alert_trigger_stats(&rows,target_id),error:String::new()}
+            }
             "monitor.config.set"=>{
                 let config:Result<StoredConfig,_>=serde_json::from_value(request.params.clone());
                 match config.map_err(|e|format!("invalid config: {e}")).and_then(normalize_config){
@@ -1942,6 +1969,18 @@ mod tests {
         HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),source_label:"Ping latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
         HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
     ];let q=history_query(&events,&json!({"eventType":"Alert","page":1,"pageSize":25}),false);assert_eq!(q["total"],1);assert_eq!(q["rows"][0]["id"],"1");}
+    #[test] fn alert_trigger_stats_counts_triggers_but_not_reminders(){
+        let base=HistoryEvent{id:"1".into(),timestamp:100,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"http:api.temp".into(),source_label:"System Info · temp".into(),name:"HighTemp".into(),value:"65".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:String::new()};
+        let mut reminder=base.clone();reminder.id="2".into();reminder.timestamp=200;reminder.status="Reminder".into();reminder.reminder=true;
+        let mut second=base.clone();second.id="3".into();second.timestamp=300;
+        let mut other_target=base.clone();other_target.id="4".into();other_target.timestamp=400;other_target.target_id=Some("b".into());
+        let result=alert_trigger_stats(&[base,reminder,second,other_target],"a");
+        assert_eq!(result["rows"].as_array().unwrap().len(),1);
+        assert_eq!(result["rows"][0]["source"],"http:api.temp");
+        assert_eq!(result["rows"][0]["name"],"HighTemp");
+        assert_eq!(result["rows"][0]["count"],2);
+        assert_eq!(result["rows"][0]["lastTriggered"],300);
+    }
 
     #[test] fn sidebar_visibility_defaults_on_for_backward_compatibility(){let c=default_config();assert!(c.show_in_sidebar);}
     #[test] fn network_identity_refresh_defaults_are_backward_compatible(){let c=default_config();assert!(c.network_identity_auto_refresh);assert_eq!(c.network_identity_refresh_seconds,300);}
