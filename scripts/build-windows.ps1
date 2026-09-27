@@ -51,7 +51,12 @@ Write-Host "Install THIS folder from RemoteHand (not the repository root):"
 Write-Host "  $packageDir"
 
 
-$zipPath = Join-Path $repo "dist\remotehand-target-monitor-v0.7.4-test-windows-x86_64.zip"
+$manifest = Get-Content -Raw (Join-Path $repo "plugin.json") | ConvertFrom-Json
+$packageVersion = [string]$manifest.version
+if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+    throw "plugin.json does not contain a valid version."
+}
+$zipPath = Join-Path $repo ("dist\remotehand-target-monitor-v{0}-windows-x86_64.zip" -f $packageVersion)
 if (Test-Path $zipPath) {
     Remove-Item -Force $zipPath
 }
@@ -61,7 +66,7 @@ $checksumPath = Join-Path $repo "dist\SHA256SUMS.txt"
 "$zipHash  $(Split-Path -Leaf $zipPath)" | Set-Content -Encoding ascii $checksumPath
 
 Write-Host ""
-Write-Host "Validation ZIP created:"
+Write-Host "Release ZIP created:"
 Write-Host "  $zipPath"
 Write-Host "  SHA256: $zipHash"
 Write-Host ""
