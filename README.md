@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.4** is the current Target Monitor release.
+**Target Monitor v0.7.5** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -215,6 +215,11 @@ Text/value rules include:
 
 - `equals`
 - `changed`
+- `didn't change` (stored as `unchanged`), with a configurable duration in seconds
+
+`changed` triggers when the current value differs from the previous sample. It does not use a comparison value.
+
+`didn't change` is intended for counters, timestamps, heartbeats, progress values, and similar sources that are expected to keep changing. It becomes active only after the value remains identical continuously for the configured duration, and any new value immediately resets that timer.
 
 A monitored field may have zero, one, or multiple assigned alerts.
 
@@ -234,7 +239,7 @@ If the condition triggers again after resolving, it becomes a new alert event.
 
 ## Native notifications
 
-Target Monitor v0.7.4 can request native Windows notifications through RemoteHand's generic plugin notification capability.
+Target Monitor v0.7.5 can request native Windows notifications through RemoteHand's generic plugin notification capability.
 
 Per target, the user may independently choose:
 
@@ -402,11 +407,16 @@ Windows installable package:
 
     powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 
-The clean Windows package is created at:
+The clean Windows package directory is created at:
 
     dist\remotehand-target-monitor-windows-x86_64
 
-Install that package directory from RemoteHand, not the repository root.
+The Windows build script also creates the versioned release ZIP and checksum file directly, for example:
+
+    dist\remotehand-target-monitor-v0.7.5-windows-x86_64.zip
+    dist\SHA256SUMS.txt
+
+Install the package directory during development, or use the versioned ZIP through RemoteHand's ZIP install flow.
 
 ## Plugin identity
 
@@ -424,7 +434,7 @@ Panel ID:
 
 Current release version:
 
-    0.7.4
+    0.7.5
 
 ## Lineage
 
@@ -432,7 +442,7 @@ Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase
 
 Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor continues that product line as **v0.7.4**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+Target Monitor continues that product line as **v0.7.5**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
 
 ## Future alert delivery
 
