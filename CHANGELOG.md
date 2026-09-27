@@ -4,6 +4,34 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.6 - 2026-09-27
+
+### Added
+
+- Target Report HTTP/HTTPS field tables now show configured reusable alert rules alongside exposed field values.
+- Added **Triggered** and **Last triggered** columns for configured field alerts.
+- Trigger counts and timestamps are derived from retained persistent History.
+- Multiple alert rules assigned to the same field are displayed as aligned per-rule rows across the alert-stat columns.
+
+### Improved
+
+- Currently active field alerts retain the highlighted alert-chip appearance while configured inactive rules remain visible with the normal configured-rule style.
+- Reminder events do not increase the Triggered count; only actual alert activation events with status `Triggered` are counted.
+- Alert statistics refresh while a Target Report is open when new History events arrive.
+- The report explicitly identifies these statistics as retained-History values rather than lifetime counters.
+
+### Compatibility
+
+- No saved configuration migration is required.
+- Existing History data is reused directly; no separate alert counter store is introduced.
+- RemoteHand core and Plugin API v1 are unchanged.
+
+### Verification
+
+- Windows Rust validation passed with **58 tests and 0 failures**.
+- Added regression coverage confirming alert trigger statistics count real triggers, exclude reminders, remain target-scoped, and report the latest trigger timestamp.
+- Manual acceptance on the BitAxe report confirmed the Alerts, Triggered, and Last triggered columns display and align as intended.
+
 ## 0.7.5 - 2026-09-27
 
 ### Added
