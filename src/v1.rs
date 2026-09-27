@@ -184,6 +184,7 @@ struct LegacyAlertConfig {
     reminder_interval_seconds: u64,
 }
 fn default_reminder_interval() -> u64 { 300 }
+fn default_unchanged_for_seconds() -> u64 { 30 }
 impl Default for LegacyAlertConfig {
     fn default() -> Self {
         Self {
@@ -207,6 +208,8 @@ struct GenericAlertRule {
     operator: String,
     #[serde(default)]
     value: Option<Value>,
+    #[serde(default = "default_unchanged_for_seconds")]
+    unchanged_for_seconds: u64,
     #[serde(default = "default_true")]
     sound_enabled: bool,
     #[serde(default = "default_true")]
@@ -580,6 +583,7 @@ struct TargetMonitor {
     http_results: BTreeMap<String, HttpResult>,
     metric_history: BTreeMap<String, Vec<MetricRecord>>,
     previous_values: BTreeMap<String, Value>,
+    unchanged_since: BTreeMap<String, u64>,
     active_alerts: BTreeMap<String, ActiveAlert>,
     last_generic_alert_at: BTreeMap<String, u64>,
     last_legacy_alert_at: BTreeMap<String, u64>,
@@ -598,6 +602,7 @@ impl TargetMonitor {
             http_results: BTreeMap::new(),
             metric_history: BTreeMap::new(),
             previous_values: BTreeMap::new(),
+            unchanged_since: BTreeMap::new(),
             active_alerts: BTreeMap::new(),
             last_generic_alert_at: BTreeMap::new(),
             last_legacy_alert_at: BTreeMap::new(),
@@ -828,8 +833,9 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
         if rule.id.trim().is_empty() || !rule_ids.insert(rule.id.clone()) { return Err("alert rule ids must be unique and non-empty".into()); }
         if rule.name.trim().is_empty() || rule.name.len() > 128 { return Err("alert rule name is missing or too long".into()); }
         if !rule_names.insert(rule.name.trim().to_lowercase()) { return Err(format!("alert rule name must be unique: {}", rule.name)); }
-        if !matches!(rule.operator.as_str(), ">="|"<="|"="|"equals"|"changed") { return Err(format!("unsupported alert operator: {}", rule.operator)); }
-        if rule.operator != "changed" && rule.value.is_none() { return Err(format!("alert rule {} requires a comparison value", rule.name)); }
+        if !matches!(rule.operator.as_str(), ">="|"<="|"="|"equals"|"changed"|"unchanged") { return Err(format!("unsupported alert operator: {}", rule.operator)); }
+        if !matches!(rule.operator.as_str(), "changed"|"unchanged") && rule.value.is_none() { return Err(format!("alert rule {} requires a comparison value", rule.name)); }
+        if rule.operator == "unchanged" && (rule.unchanged_for_seconds < 1 || rule.unchanged_for_seconds > 86400) { return Err(format!("alert rule {} unchanged duration must be 1-86400 seconds", rule.name)); }
         if rule.reminder_interval_seconds < 5 || rule.reminder_interval_seconds > 86400 { return Err(format!("alert rule {} reminder interval must be 5-86400 seconds", rule.name)); }
         if let Some(sound) = &rule.sound { validate_sound(sound)?; sound_total += sound.size_bytes; }
     }
@@ -1226,19 +1232,35 @@ fn rule_matches(rule:&GenericAlertRule,current:&Value,previous:Option<&Value>)->
         "="=>numeric(current).zip(rule.value.as_ref().and_then(numeric)).map(|(a,b)|(a-b).abs()<f64::EPSILON).unwrap_or(false),
         "equals"=>rule.value.as_ref().map(|v|v==current).unwrap_or(false),
         "changed"=>previous.map(|v|v!=current).unwrap_or(false),
+        "unchanged"=>false,
         _=>false
     }
+}
+fn update_unchanged_since(unchanged_since:&mut BTreeMap<String,u64>,source:&str,current:&Value,previous:Option<&Value>,now:u64)->u64{
+    if previous.map(|value|value!=current).unwrap_or(true) {
+        unchanged_since.insert(source.into(),now);
+        now
+    } else {
+        *unchanged_since.entry(source.into()).or_insert(now)
+    }
+}
+fn rule_matches_at(rule:&GenericAlertRule,current:&Value,previous:Option<&Value>,unchanged_since:Option<u64>,now:u64)->bool{
+    if rule.operator!="unchanged" { return rule_matches(rule,current,previous); }
+    rule.enabled
+        && previous.is_some()
+        && unchanged_since.map(|since|now.saturating_sub(since)>=rule.unchanged_for_seconds.saturating_mul(1000)).unwrap_or(false)
 }
 fn sound_payload(sound:&Option<SoundConfig>)->Value{
     match sound { Some(s)=>json!({"filename":s.filename,"mime":s.mime,"dataUrl":s.data_url,"durationMs":s.duration_ms}),None=>Value::Null }
 }
 fn evaluate_rules(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut TargetMonitor,rules:&[GenericAlertRule],source:&str,current:Value,assigned:&[String]){
     let previous=monitor.previous_values.get(source).cloned();
+    let now=now_ms();
+    let unchanged_since=update_unchanged_since(&mut monitor.unchanged_since,source,&current,previous.as_ref(),now);
     for rule_id in assigned {
         let Some(rule)=rules.iter().find(|r|&r.id==rule_id) else {continue};
         let key=format!("{source}:{rule_id}");
-        let matches=rule_matches(rule,&current,previous.as_ref());
-        let now=now_ms();
+        let matches=rule_matches_at(rule,&current,previous.as_ref(),Some(unchanged_since),now);
         if matches && !monitor.active_alerts.contains_key(&key) {
             let alert=ActiveAlert{key:key.clone(),target_id:monitor.target.id.clone(),rule_id:rule.id.clone(),rule_name:rule.name.clone(),source:source.into(),current_value:current.clone(),since:now,acknowledged:false};
             monitor.active_alerts.insert(key.clone(),alert.clone());
@@ -1960,15 +1982,18 @@ mod tests {
     }
     #[test] fn flatten_json_discovers_nested_numeric_fields(){let mut out=BTreeMap::new();flatten_json("",&json!({"system":{"temp":58.4},"hashRate_10m":1210}),&mut out);assert_eq!(out["system.temp"],json!(58.4));assert_eq!(out["hashRate_10m"],json!(1210));}
     #[test] fn regex_named_capture_is_numeric_when_possible(){let out=extract_fields("regex",r"temperature=(?<temp>[0-9.]+)","temperature=58.4","text/plain").unwrap();assert_eq!(out["temp"],json!(58.4));}
-    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
-    #[test] fn reusable_alert_names_must_be_unique_case_insensitively(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();b.name="hightemp".into();c.alert_rules=vec![a,b];assert!(validate_config(&c).is_err());}
-    #[test] fn legacy_duplicate_reusable_alert_names_are_migrated(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();c.alert_rules=vec![a,b];assert!(migrate_legacy_rule_names(&mut c));assert_eq!(c.alert_rules[0].name,"HighTemp");assert_eq!(c.alert_rules[1].name,"HighTemp (2)");assert!(validate_config(&c).is_ok());}
+    #[test] fn generic_alert_numeric_operator_works(){let rule=GenericAlertRule{id:"x".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(rule_matches(&rule,&json!(58.4),None));assert!(!rule_matches(&rule,&json!(54.9),None));}
+    #[test] fn reusable_alert_names_must_be_unique_case_insensitively(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();b.name="hightemp".into();c.alert_rules=vec![a,b];assert!(validate_config(&c).is_err());}
+    #[test] fn legacy_duplicate_reusable_alert_names_are_migrated(){let mut c=default_config();let a=GenericAlertRule{id:"a".into(),name:"HighTemp".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let mut b=a.clone();b.id="b".into();c.alert_rules=vec![a,b];assert!(migrate_legacy_rule_names(&mut c));assert_eq!(c.alert_rules[0].name,"HighTemp");assert_eq!(c.alert_rules[1].name,"HighTemp (2)");assert!(validate_config(&c).is_ok());}
     #[test] fn reusable_alert_delivery_defaults_on_for_backward_compatibility(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(rule.sound_enabled);assert!(rule.notification_enabled);}
     #[test] fn reusable_alert_delivery_channels_can_be_disabled_independently(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"soundEnabled":false,"notificationEnabled":true,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.sound_enabled);assert!(rule.notification_enabled);}
     #[test] fn reusable_alert_reminders_default_off(){let raw=json!({"id":"x","name":"Hot","enabled":true,"operator":">=","value":55,"sound":null});let rule:GenericAlertRule=serde_json::from_value(raw).unwrap();assert!(!rule.reminders_enabled);assert_eq!(rule.reminder_interval_seconds,300);}
     #[test] fn legacy_alert_channel_flags_fall_back_to_old_enabled_field(){let enabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":true,"cooldownSeconds":60,"sound":null})).unwrap();assert!(enabled.sound_enabled());assert!(enabled.notification_enabled());let disabled:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(!disabled.sound_enabled());assert!(!disabled.notification_enabled());}
     #[test] fn legacy_alert_channel_flags_can_be_independent(){let rule:LegacyAlertRule=serde_json::from_value(json!({"enabled":false,"soundEnabled":true,"notificationEnabled":false,"cooldownSeconds":60,"sound":null})).unwrap();assert!(rule.sound_enabled());assert!(!rule.notification_enabled());}
-    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
+    #[test] fn changed_alert_requires_previous_value(){let rule=GenericAlertRule{id:"x".into(),name:"Changed".into(),enabled:true,operator:"changed".into(),value:None,unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};assert!(!rule_matches(&rule,&json!("a"),None));assert!(rule_matches(&rule,&json!("b"),Some(&json!("a"))));}
+    #[test] fn unchanged_alert_waits_for_configured_duration(){let rule=GenericAlertRule{id:"x".into(),name:"Stalled".into(),enabled:true,operator:"unchanged".into(),value:None,unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};let current=json!(42);assert!(!rule_matches_at(&rule,&current,None,Some(1000),31000));assert!(!rule_matches_at(&rule,&current,Some(&current),Some(1000),30999));assert!(rule_matches_at(&rule,&current,Some(&current),Some(1000),31000));}
+    #[test] fn unchanged_timer_resets_when_value_changes(){let mut timers=BTreeMap::new();let a=json!(1);let b=json!(2);assert_eq!(update_unchanged_since(&mut timers,"metric", &a,None,1000),1000);assert_eq!(update_unchanged_since(&mut timers,"metric",&a,Some(&a),5000),1000);assert_eq!(update_unchanged_since(&mut timers,"metric",&b,Some(&a),6000),6000);assert_eq!(timers["metric"],6000);}
+    #[test] fn unchanged_alert_config_does_not_require_comparison_value(){let mut c=default_config();c.alert_rules.push(GenericAlertRule{id:"x".into(),name:"Stalled".into(),enabled:true,operator:"unchanged".into(),value:None,unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300});assert!(validate_config(&c).is_ok());}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
     #[test] fn source_formatting_applies_to_display_without_changing_raw_value(){
         let mut s=MonitorStore::new();
@@ -2137,7 +2162,7 @@ mod tests {
     #[test] fn replace_config_prunes_active_alert_when_rule_is_deleted(){
         let mut s=MonitorStore::new();
         let mut c=s.config.clone();
-        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
         c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
@@ -2157,7 +2182,7 @@ mod tests {
     #[test] fn replace_config_prunes_active_alert_when_source_is_unassigned(){
         let mut s=MonitorStore::new();
         let mut c=s.config.clone();
-        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
+        let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
         c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
         s.replace_config(c.clone());
