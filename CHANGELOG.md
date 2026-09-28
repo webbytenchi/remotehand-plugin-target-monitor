@@ -4,6 +4,25 @@ All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
 
+## 0.7.7 - 2026-09-29
+
+### Changed
+
+- Custom alert-sound selection now uses RemoteHand's native `files.open` host API.
+- Selected custom sounds are read by the plugin backend and delivered to the UI as encoded audio.
+- Removed browser-side file-reading fallbacks from the alert-sound workflow.
+
+### Compatibility
+
+- Existing targets, reusable alerts, History, reports, Network Identity, top-bar, and tray configuration remain compatible.
+- Plugin API remains **v1**.
+
+### Verification
+
+- Windows Rust validation passed with **58 tests and 0 failures**.
+- Optimized Windows release build passed.
+- Manual Windows acceptance confirmed native sound picking, selected-sound playback, and sound persistence after restart.
+
 ## 0.7.6 - 2026-09-27
 
 ### Added
