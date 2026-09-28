@@ -1,7 +1,10 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
@@ -1080,6 +1083,21 @@ fn host_request(input:&mut impl Read, output:&mpsc::Sender<Value>, request_id:&m
         }
     }
 }
+fn pick_alert_sound(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<Value,String>{
+    let picked=host_request(input,output,request_id,"file.open",json!({"filters":[{"name":"Alert sound","extensions":["mp3","wav"]}]}))?;
+    if picked.get("opened")!=Some(&Value::Bool(true)){return Ok(json!({"selected":false}));}
+    let path_text=picked.get("path").and_then(Value::as_str).ok_or_else(||"host file.open did not return a path".to_string())?;
+    let path=Path::new(path_text);
+    let metadata=fs::metadata(path).map_err(|e|format!("cannot inspect alert sound: {e}"))?;
+    if !metadata.is_file(){return Err("selected sound is not a regular file".to_string());}
+    if metadata.len()==0||metadata.len()>MAX_SOUND_FILE_BYTES{return Err("Sound must be between 1 byte and 2 MiB.".to_string());}
+    let ext=path.extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mime=match ext.as_str(){"mp3"=>"audio/mpeg","wav"=>"audio/wav",_=>return Err("Select an MP3 or WAV file.".to_string())};
+    let bytes=fs::read(path).map_err(|e|format!("cannot read alert sound: {e}"))?;
+    let filename=path.file_name().and_then(|v|v.to_str()).unwrap_or("alert-sound").to_string();
+    Ok(json!({"selected":true,"filename":filename,"mime":mime,"dataUrl":format!("data:{mime};base64,{}",BASE64_STANDARD.encode(bytes)),"sizeBytes":metadata.len()}))
+}
+
 fn load_config(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<Option<StoredConfig>,String>{
     let result=host_request(input,output,request_id,"storage.get",json!({"key":STORAGE_KEY}))?;
     match result.get("value") { None|Some(Value::Null)=>Ok(None), Some(v)=>serde_json::from_value(v.clone()).map(Some).map_err(|e|format!("invalid stored Target Monitor config: {e}")) }
@@ -1849,6 +1867,12 @@ fn main()->Result<(),String>{
                 let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
                 let rows=history.snapshot();
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:alert_trigger_stats(&rows,target_id),error:String::new()}
+            }
+            "monitor.sound.pick"=>{
+                match pick_alert_sound(&mut input,&output_tx,&mut host_request_id){
+                    Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
             }
             "monitor.config.set"=>{
                 let config:Result<StoredConfig,_>=serde_json::from_value(request.params.clone());
