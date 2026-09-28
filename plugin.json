@@ -17,6 +17,7 @@
     "network.connect",
     "network.inspect",
     "clipboard.write",
+    "files.open",
     "files.save",
     "storage.plugin",
     "tray.contribute",
