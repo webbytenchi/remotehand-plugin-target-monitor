@@ -1618,25 +1618,27 @@ fn topbar_value_source_is_alerting(m:&TargetMonitor,source:&str)->bool{
 fn topbar_value_color<'a>(m:&'a TargetMonitor,source:&str)->&'a str{
     if topbar_value_source_is_alerting(m,source){&m.target.value_alert_color}else{&m.target.latency_color}
 }
-fn live_alert_severity(m:&TargetMonitor)->Option<&'static str>{
-    if !m.target.enabled{return None;}
-    let mut warning=false;
-    if m.target.ping_enabled {
-        match m.last_state.as_str() {
-            "OFFLINE"=>return Some("critical"),
-            "HIGH LATENCY"=>warning=true,
-            _=>{}
+fn topbar_source_severity(m:&TargetMonitor,source:&str)->Option<&'static str>{
+    if source=="none"||source.is_empty()||source=="target.name"{return None;}
+    if source=="ping.latency"{
+        return match m.last_state.as_str(){"OFFLINE"=>Some("critical"),"HIGH LATENCY"=>Some("warning"),_=>None};
+    }
+    if let Some(value)=source_value(m,source).as_f64(){
+        if let Some(thresholds)=m.target.graph_thresholds.get(source){
+            if thresholds.critical.as_ref().map(|t|threshold_matches(value,t)).unwrap_or(false){return Some("critical");}
+            if thresholds.warning.as_ref().map(|t|threshold_matches(value,t)).unwrap_or(false){return Some("warning");}
         }
     }
-    for (source,thresholds) in &m.target.graph_thresholds {
-        let Some(value)=source_value(m,source).as_f64() else {continue;};
-        if thresholds.critical.as_ref().map(|t|threshold_matches(value,t)).unwrap_or(false){return Some("critical");}
-        if thresholds.warning.as_ref().map(|t|threshold_matches(value,t)).unwrap_or(false){warning=true;}
-    }
-    if m.target.tcp_checks.iter().filter(|c|c.enabled).any(|c|m.tcp_results.get(&c.id).map(|r|!r.reachable).unwrap_or(false)){warning=true;}
-    if m.target.http_checks.iter().filter(|c|c.enabled).any(|c|m.http_results.get(&c.id).map(|r|r.error.is_some()||r.status_code.unwrap_or(599)>=400).unwrap_or(false)){warning=true;}
-    if !m.active_alerts.is_empty(){warning=true;}
-    warning.then_some("warning")
+    if m.active_alerts.values().any(|alert|alert.source==source){return Some("warning");}
+    None
+}
+fn live_alert_severity(m:&TargetMonitor)->Option<&'static str>{
+    if !m.target.enabled{return None;}
+    let value=topbar_source_severity(m,&m.target.topbar.value_source);
+    let graph=topbar_source_severity(m,&m.target.topbar.graph_source);
+    if value==Some("critical")||graph==Some("critical"){Some("critical")}
+    else if value==Some("warning")||graph==Some("warning"){Some("warning")}
+    else{None}
 }
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
@@ -2205,7 +2207,7 @@ mod tests {
         assert_eq!(builtin_source_format("http:api.responseTime").suffix," ms");
     }
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
-    #[test] fn topbar_live_alert_icon_tracks_warning_critical_and_clear(){
+    #[test] fn topbar_live_alert_icon_tracks_selected_value_and_graph_sources(){
         let mut s=MonitorStore::new();
         {
             let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
@@ -2217,7 +2219,9 @@ mod tests {
                 warning:Some(GraphThreshold{operator:">=".into(),value:55.0}),
                 critical:Some(GraphThreshold{operator:">=".into(),value:70.0}),
             });
-            m.http_results.insert("api".into(),HttpResult{id:"api".into(),name:"API".into(),url:"https://example.com".into(),status_code:Some(200),response_time_ms:Some(5.0),content_type:"application/json".into(),body:String::new(),fields:BTreeMap::from([("temp".into(),json!(60.0))]),error:None,timestamp:now_ms()});
+            m.target.topbar.value_source="http:api.temp".into();
+            m.target.topbar.graph_source="http:api.temp".into();
+            m.http_results.insert("api".into(),HttpResult{id:"api".into(),name:"API".into(),url:"https://example.com".into(),status_code:Some(200),response_time_ms:Some(5.0),content_type:"application/json".into(),body:String::new(),fields:BTreeMap::from([("temp".into(),json!(60.0)),("other".into(),json!(1))]),error:None,timestamp:now_ms()});
         }
         let warning=topbar_value(&s);
         assert_eq!(warning["items"][0]["icon"],json!("alert"));
@@ -2230,6 +2234,35 @@ mod tests {
         let clear=topbar_value(&s);
         assert!(clear["items"][0]["icon"].is_null());
         assert!(clear["items"][0]["content"]["color"].is_null());
+    }
+    #[test] fn unrelated_active_alert_does_not_drive_topbar_live_icon(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.ping_enabled=false;
+        m.target.topbar.value_source="metric.temp".into();
+        m.target.topbar.graph_source="metric.temp".into();
+        m.active_alerts.insert("other:rule".into(),ActiveAlert{
+            key:"other:rule".into(),target_id:m.target.id.clone(),rule_id:"rule".into(),rule_name:"Changed".into(),
+            source:"metric.other".into(),current_value:json!(1),since:now_ms(),acknowledged:false,
+        });
+        let topbar=topbar_value(&s);
+        assert!(topbar["items"][0]["icon"].is_null());
+        assert_eq!(topbar["items"][0]["unreadAlertCount"],json!(1));
+    }
+    #[test] fn selected_source_active_alert_drives_warning_icon(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.ping_enabled=false;
+        m.target.graph_high_color="#123456".into();
+        m.target.topbar.value_source="metric.temp".into();
+        m.target.topbar.graph_source="none".into();
+        m.active_alerts.insert("temp:rule".into(),ActiveAlert{
+            key:"temp:rule".into(),target_id:m.target.id.clone(),rule_id:"rule".into(),rule_name:"Changed".into(),
+            source:"metric.temp".into(),current_value:json!(1),since:now_ms(),acknowledged:false,
+        });
+        let topbar=topbar_value(&s);
+        assert_eq!(topbar["items"][0]["icon"],json!("alert"));
+        assert_eq!(topbar["items"][0]["content"]["color"],json!("#123456"));
     }
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
     #[test] fn generic_graph_thresholds_color_numeric_series(){
