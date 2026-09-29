@@ -850,7 +850,7 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
     for target in &config.targets {
         if target.id.trim().is_empty() || !target_ids.insert(target.id.clone()) { return Err("target ids must be unique and non-empty".into()); }
         if target.name.trim().is_empty() || target.name.len() > 128 { return Err("target name is missing or too long".into()); }
-        resolve_target(&target.address)?;
+        validate_target_address(&target.address)?;
         for color in [&target.graph_normal_color,&target.graph_high_color,&target.graph_critical_color,&target.graph_offline_color,&target.target_name_color,&target.latency_color,&target.value_alert_color,&target.background_color,&target.border_color] {
             if !valid_hex_color(color) { return Err("target colors must use #RRGGBB".into()); }
         }
@@ -1197,9 +1197,25 @@ fn alert_trigger_stats(events:&[HistoryEvent],target_id:&str)->Value{
 }
 
 
-fn resolve_target(target:&str)->Result<IpAddr,String>{
+fn validate_target_address(target:&str)->Result<(),String>{
     let target=target.trim();
     if target.is_empty()||target.len()>255{return Err("target must be 1-255 characters".into());}
+    if target.parse::<IpAddr>().is_ok(){return Ok(());}
+    if target.chars().any(char::is_whitespace){return Err("target host name cannot contain whitespace".into());}
+    if target.contains("://")||target.contains('/')||target.contains('\\')||target.contains('@')||target.contains('#')||target.contains('?')||target.contains(':'){
+        return Err("target must be a host name or IP address, without a scheme, path, or port".into());
+    }
+    if !target.chars().all(|ch|ch.is_ascii_alphanumeric()||matches!(ch,'.'|'-'|'_')){
+        return Err("target host name contains unsupported characters".into());
+    }
+    if target.split('.').any(|label|label.is_empty()||label.len()>63||label.starts_with('-')||label.ends_with('-')){
+        return Err("target host name is malformed".into());
+    }
+    Ok(())
+}
+fn resolve_target(target:&str)->Result<IpAddr,String>{
+    validate_target_address(target)?;
+    let target=target.trim();
     if let Ok(ip)=target.parse(){return Ok(ip);}
     (target,0).to_socket_addrs().map_err(|e|format!("failed to resolve target: {e}"))?.next().map(|a|a.ip()).ok_or_else(||"target did not resolve".into())
 }
@@ -1602,6 +1618,26 @@ fn topbar_value_source_is_alerting(m:&TargetMonitor,source:&str)->bool{
 fn topbar_value_color<'a>(m:&'a TargetMonitor,source:&str)->&'a str{
     if topbar_value_source_is_alerting(m,source){&m.target.value_alert_color}else{&m.target.latency_color}
 }
+fn live_alert_severity(m:&TargetMonitor)->Option<&'static str>{
+    if !m.target.enabled{return None;}
+    let mut warning=false;
+    if m.target.ping_enabled {
+        match m.last_state.as_str() {
+            "OFFLINE"=>return Some("critical"),
+            "HIGH LATENCY"=>warning=true,
+            _=>{}
+        }
+    }
+    for (source,thresholds) in &m.target.graph_thresholds {
+        let Some(value)=source_value(m,source).as_f64() else {continue;};
+        if thresholds.critical.as_ref().map(|t|threshold_matches(value,t)).unwrap_or(false){return Some("critical");}
+        if thresholds.warning.as_ref().map(|t|threshold_matches(value,t)).unwrap_or(false){warning=true;}
+    }
+    if m.target.tcp_checks.iter().filter(|c|c.enabled).any(|c|m.tcp_results.get(&c.id).map(|r|!r.reachable).unwrap_or(false)){warning=true;}
+    if m.target.http_checks.iter().filter(|c|c.enabled).any(|c|m.http_results.get(&c.id).map(|r|r.error.is_some()||r.status_code.unwrap_or(599)>=400).unwrap_or(false)){warning=true;}
+    if !m.active_alerts.is_empty(){warning=true;}
+    warning.then_some("warning")
+}
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
         let title=display_value(&source_value(m,&m.target.topbar.title_source));
@@ -1613,7 +1649,9 @@ fn topbar_value(store:&MonitorStore)->Value{
         if m.target.topbar.graph_source!="none"{children.push(json!({"type":"sparkline","tone":topbar_tone(m.overall_state()),"series":series}));}
         let unread=m.unread_alerts();
         if unread>0{children.push(json!({"type":"badge","label":unread.to_string(),"tone":"warning","fontSize":9}));}
-        json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,&m.target.topbar.graph_source),"size":{"width":124,"height":44},"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
+        let severity=live_alert_severity(m);
+        let alert_color=match severity{Some("critical")=>Some(m.target.graph_critical_color.as_str()),Some("warning")=>Some(m.target.graph_high_color.as_str()),_=>None};
+        json!({"id":format!("target-monitor:{}",m.target.id),"title":m.target.name,"tooltip":surface_tooltip(m,&m.target.topbar.value_source,&m.target.topbar.graph_source),"size":{"width":124,"height":44},"icon":severity.map(|_|"alert"),"content":{"type":"stack","tone":topbar_tone(m.overall_state()),"color":alert_color,"backgroundColor":m.target.background_color,"borderColor":m.target.border_color,"children":children},"action":{"type":"open-panel","panel":"target-monitor","context":{"targetId":m.target.id}},"targetId":m.target.id,"state":m.overall_state(),"unreadAlertCount":unread})
     }).collect::<Vec<_>>();
     let mut items=items;
     if store.config.show_network_identity_topbar {
@@ -2058,6 +2096,8 @@ mod tests {
     #[test] fn unchanged_timer_resets_when_value_changes(){let mut timers=BTreeMap::new();let a=json!(1);let b=json!(2);assert_eq!(update_unchanged_since(&mut timers,"metric", &a,None,1000),1000);assert_eq!(update_unchanged_since(&mut timers,"metric",&a,Some(&a),5000),1000);assert_eq!(update_unchanged_since(&mut timers,"metric",&b,Some(&a),6000),6000);assert_eq!(timers["metric"],6000);}
     #[test] fn unchanged_alert_config_does_not_require_comparison_value(){let mut c=default_config();c.alert_rules.push(GenericAlertRule{id:"x".into(),name:"Stalled".into(),enabled:true,operator:"unchanged".into(),value:None,unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300});assert!(validate_config(&c).is_ok());}
     #[test] fn config_rejects_unknown_rule_assignment(){let mut c=default_config();c.targets[0].tcp_checks.push(TcpCheck{id:"ssh".into(),name:"SSH".into(),port:22,enabled:true,alert_rule_ids:vec!["missing".into()]});assert!(validate_config(&c).is_err());}
+    #[test] fn config_accepts_temporarily_unresolvable_target(){let mut c=default_config();c.targets[0].address="remotehand-definitely-unresolvable.invalid".into();assert!(validate_config(&c).is_ok());}
+    #[test] fn config_rejects_target_url_instead_of_host(){let mut c=default_config();c.targets[0].address="https://example.com/path".into();assert!(validate_config(&c).is_err());}
     #[test] fn source_formatting_applies_to_display_without_changing_raw_value(){
         let mut s=MonitorStore::new();
         let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
@@ -2165,6 +2205,32 @@ mod tests {
         assert_eq!(builtin_source_format("http:api.responseTime").suffix," ms");
     }
     #[test] fn topbar_is_one_item_per_target(){let s=MonitorStore::new();assert_eq!(topbar_value(&s)["items"].as_array().unwrap().len(),1);}
+    #[test] fn topbar_live_alert_icon_tracks_warning_critical_and_clear(){
+        let mut s=MonitorStore::new();
+        {
+            let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+            m.target.ping_enabled=false;
+            m.target.graph_high_color="#112233".into();
+            m.target.graph_critical_color="#445566".into();
+            m.target.http_checks.push(HttpCheck{id:"api".into(),name:"API".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::new()});
+            m.target.graph_thresholds.insert("http:api.temp".into(),GraphThresholdConfig{
+                warning:Some(GraphThreshold{operator:">=".into(),value:55.0}),
+                critical:Some(GraphThreshold{operator:">=".into(),value:70.0}),
+            });
+            m.http_results.insert("api".into(),HttpResult{id:"api".into(),name:"API".into(),url:"https://example.com".into(),status_code:Some(200),response_time_ms:Some(5.0),content_type:"application/json".into(),body:String::new(),fields:BTreeMap::from([("temp".into(),json!(60.0))]),error:None,timestamp:now_ms()});
+        }
+        let warning=topbar_value(&s);
+        assert_eq!(warning["items"][0]["icon"],json!("alert"));
+        assert_eq!(warning["items"][0]["content"]["color"],json!("#112233"));
+        s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().http_results.get_mut("api").unwrap().fields.insert("temp".into(),json!(75.0));
+        let critical=topbar_value(&s);
+        assert_eq!(critical["items"][0]["icon"],json!("alert"));
+        assert_eq!(critical["items"][0]["content"]["color"],json!("#445566"));
+        s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().http_results.get_mut("api").unwrap().fields.insert("temp".into(),json!(50.0));
+        let clear=topbar_value(&s);
+        assert!(clear["items"][0]["icon"].is_null());
+        assert!(clear["items"][0]["content"]["color"].is_null());
+    }
     #[test] fn disabled_topbar_hides_target(){let mut s=MonitorStore::new();s.targets.get_mut(DEFAULT_TARGET_ID).unwrap().target.topbar.enabled=false;assert!(topbar_value(&s)["items"].as_array().unwrap().is_empty());}
     #[test] fn generic_graph_thresholds_color_numeric_series(){
         let mut s=MonitorStore::new();
