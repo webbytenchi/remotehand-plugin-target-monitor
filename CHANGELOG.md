@@ -3,14 +3,26 @@
 ## 0.7.8 - 2026-09-29
 
 ### Added
-- The top bar now shows a live alert icon on the left when a target has an active Warning or Critical condition. The icon uses the target's configured Warning or Critical color, Critical takes precedence, and the icon disappears when the target returns to normal.
+
+- **Live top-bar severity indicator.** The left-side alert icon reflects only the configured Top Bar Value and Graph sources: Warning uses the target's configured Warning color, Critical uses the configured Critical color, Critical takes precedence, and normal state hides the icon.
+- Ping sources map High Latency to Warning and Offline to Critical. Reusable alerts can raise Warning only when they belong to the selected top-bar source.
 
 ### Improved
-- Targets can now be saved even when the host is currently unreachable or DNS resolution fails. Malformed host/IP input is still rejected; reachability and name-resolution failures are treated as live monitoring state instead of configuration errors.
+
+- **Offline target creation.** Targets can now be saved even when the host is currently unreachable or DNS resolution fails. Malformed host/IP input is still rejected; availability and name-resolution failures are treated as live monitoring state.
+- **Independent alert indicators.** Unrelated alerts no longer drive the left live-severity icon; the existing numbered unread-alert badge on the right remains independent.
+- **Long top-bar titles.** Full title text is now passed to RemoteHand so the host can apply proper ellipsis instead of Target Monitor pre-truncating the value.
+
+### Compatibility
+
+- Plugin API remains **v1**.
+- Existing targets, alerts, top-bar settings, and history remain compatible.
 
 ### Verification
-- Automated coverage now includes temporarily unresolvable targets, malformed target URLs, and Warning/Critical/clear top-bar alert icon behavior.
-- The existing numbered alert/history badge remains unchanged on the right.
+
+- Windows Rust validation passed with **63 tests and 0 failures**.
+- Optimized Windows package build passed.
+- Manual Windows acceptance confirmed unresolvable targets can be saved and monitored, selected Value/Graph Warning and Critical states drive the left icon correctly, unrelated alerts remain right-badge-only, corner indicators align, and long titles ellipsize correctly.
 
 All notable changes to RemoteHand Target Monitor are documented in this file.
 
