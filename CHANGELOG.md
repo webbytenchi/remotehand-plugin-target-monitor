@@ -20,7 +20,7 @@
 
 ### Verification
 
-- Windows Rust validation passed with **63 tests and 0 failures**.
+- Windows Rust validation passed with **64 tests and 0 failures**.
 - Optimized Windows package build passed.
 - Manual Windows acceptance confirmed unresolvable targets can be saved and monitored, selected Value/Graph Warning and Critical states drive the left icon correctly, unrelated alerts remain right-badge-only, corner indicators align, and long titles ellipsize correctly.
 
