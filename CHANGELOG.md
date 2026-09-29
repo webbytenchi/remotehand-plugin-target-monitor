@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.8 - 2026-09-29
+
+### Added
+- The top bar now shows a live alert icon on the left when a target has an active Warning or Critical condition. The icon uses the target's configured Warning or Critical color, Critical takes precedence, and the icon disappears when the target returns to normal.
+
+### Improved
+- Targets can now be saved even when the host is currently unreachable or DNS resolution fails. Malformed host/IP input is still rejected; reachability and name-resolution failures are treated as live monitoring state instead of configuration errors.
+
+### Verification
+- Automated coverage now includes temporarily unresolvable targets, malformed target URLs, and Warning/Critical/clear top-bar alert icon behavior.
+- The existing numbered alert/history badge remains unchanged on the right.
+
 All notable changes to RemoteHand Target Monitor are documented in this file.
 
 The format follows Keep a Changelog and Semantic Versioning.
