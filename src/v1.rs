@@ -1407,6 +1407,12 @@ fn source_value(monitor:&TargetMonitor,source:&str)->Value{
 fn display_value(v:&Value)->String{
     match v {Value::Null=>"—".into(),Value::Bool(b)=>if *b{"Yes".into()}else{"No".into()},Value::Number(n)=>n.as_f64().map(|f|if f.abs()>=100.0{format!("{f:.0}")}else{format!("{f:.1}")}).unwrap_or_else(||n.to_string()),Value::String(s)=>s.chars().take(22).collect(),_=>v.to_string()}
 }
+fn topbar_title_value(monitor:&TargetMonitor,source:&str)->String{
+    match source_value(monitor,source){
+        Value::String(value)=>value,
+        other=>display_value(&other),
+    }
+}
 fn builtin_source_format(source:&str)->SourceFormat{
     if source=="ping.latency" || (source.starts_with("tcp:") && source.ends_with(".latency")) || (source.starts_with("http:") && source.ends_with(".responseTime")) {
         return SourceFormat{prefix:String::new(),suffix:" ms".into()};
@@ -1642,7 +1648,7 @@ fn live_alert_severity(m:&TargetMonitor)->Option<&'static str>{
 }
 fn topbar_value(store:&MonitorStore)->Value{
     let items=store.targets.values().filter(|m|m.target.enabled&&m.target.topbar.enabled).map(|m|{
-        let title=display_value(&source_value(m,&m.target.topbar.title_source));
+        let title=topbar_title_value(m,&m.target.topbar.title_source);
         let value=formatted_source_value(m,&m.target.topbar.value_source,false);
         let series=graph_series_for(m,&m.target.topbar.graph_source,store.config.monitoring.topbar_history_seconds);
         let mut children=vec![];
@@ -2136,6 +2142,14 @@ mod tests {
         assert_eq!(topbar_value_color(m,"ping.latency"),"#ff0000");
         m.last_state="OFFLINE".into();
         assert_eq!(topbar_value_color(m,"ping.latency"),"#ff0000");
+    }
+    #[test] fn topbar_title_preserves_full_text_for_host_ellipsis(){
+        let mut s=MonitorStore::new();
+        let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.name="Long Name goes here and here".into();
+        m.target.topbar.title_source="target.name".into();
+        let topbar=topbar_value(&s);
+        assert_eq!(topbar["items"][0]["content"]["children"][0]["label"],json!("Long Name goes here and here"));
     }
     #[test] fn topbar_and_tooltip_use_formatted_source_values(){
         let mut s=MonitorStore::new();
