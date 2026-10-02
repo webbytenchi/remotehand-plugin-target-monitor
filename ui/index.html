@@ -256,6 +256,8 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{width:100
 
 <div id="fieldAlertModal" class="modal-backdrop" style="z-index:30"><div class="modal small action-modal"><div class="modal-action-head"><h2>Alert Rules</h2><div class="spacer"></div><button class="btn" data-close="fieldAlertModal">Cancel</button><button id="saveFieldAlerts" class="btn primary">Apply</button></div><div class="modal-action-body"><div class="muted" id="fieldAlertSource"></div><div id="fieldAlertRules" class="rule-picker-list"></div></div></div></div>
 
+<div id="historyClearModal" class="modal-backdrop"><div class="modal small"><h2>Clear History?</h2><p>This permanently deletes all saved Target Monitor History entries. Monitoring, sounds, and notifications are not affected.</p><div class="footer"><button class="btn" data-close="historyClearModal">Cancel</button><button id="confirmHistoryClear" class="btn danger" type="button">Clear History</button></div></div></div>
+
 <div id="ruleDeleteModal" class="modal-backdrop"><div class="modal small"><h2>Delete Alert Rule?</h2><div id="ruleDeleteMessage"></div><div id="ruleDeleteAssignments" class="subbox" hidden></div><div class="footer"><button class="btn" data-close="ruleDeleteModal">Cancel</button><button id="confirmDeleteRule" class="btn danger">Delete Rule and Remove Assignments</button></div></div></div>
 
 <div id="ruleModal" class="modal-backdrop"><div class="modal small action-modal"><div class="modal-action-head"><h2 id="ruleModalTitle">Alert Rule</h2><div class="spacer"></div><button class="btn" data-close="ruleModal">Cancel</button><button id="saveRule" class="btn primary">Save Rule</button></div><div class="modal-action-body"><div class="fields">
@@ -606,11 +608,13 @@ $("datePickerCancel").onclick=closeDatePicker;$("datePickerApply").onclick=apply
 document.addEventListener("pointerdown",e=>{const picker=$("historyDatePicker");if(picker.hidden)return;if(picker.contains(e.target)||e.target===datePickerState.field)return;closeDatePicker()});
 window.addEventListener("resize",()=>{if(!$("historyDatePicker").hidden&&datePickerState.field)positionDatePicker(datePickerState.field)});
 $("historyRefresh").onclick=()=>void loadHistory(true);
-$("historyDelete").onclick=async()=>{
-  if(!confirm("Clear all saved Target Monitor History? This cannot be undone."))return;
-  const button=$("historyDelete");button.disabled=true;
+$("historyDelete").onclick=()=>open("historyClearModal");
+$("confirmHistoryClear").onclick=async()=>{
+  const button=$("confirmHistoryClear");button.disabled=true;
   try{
     await request("monitor.history.clear");
+    close("historyClearModal");
+    historyLoaded=false;
     historyState.page=1;
     await loadHistory(true);
     notice("History cleared.","success");
