@@ -421,6 +421,8 @@ struct StoredConfig {
     #[serde(default)]
     alert_rules: Vec<GenericAlertRule>,
     #[serde(default = "default_true")]
+    history_enabled: bool,
+    #[serde(default = "default_true")]
     show_in_sidebar: bool,
     #[serde(default)]
     show_network_identity_topbar: bool,
@@ -481,14 +483,20 @@ struct HistoryEvent {
 struct HistoryState {
     events: Arc<Mutex<Vec<HistoryEvent>>>,
     dirty: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
 }
 impl Default for HistoryState {
     fn default() -> Self {
-        Self { events: Arc::new(Mutex::new(Vec::new())), dirty: Arc::new(AtomicBool::new(false)) }
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+            dirty: Arc::new(AtomicBool::new(false)),
+            enabled: Arc::new(AtomicBool::new(true)),
+        }
     }
 }
 impl HistoryState {
     fn record(&self, event: HistoryEvent) {
+        if !self.enabled.load(Ordering::Acquire) { return; }
         if let Ok(mut events)=self.events.lock() {
             events.push(event);
             if events.len()>MAX_HISTORY_EVENTS {
@@ -503,6 +511,11 @@ impl HistoryState {
         if events.len()>MAX_HISTORY_EVENTS { events.drain(0..events.len()-MAX_HISTORY_EVENTS); }
         if let Ok(mut current)=self.events.lock(){*current=events;}
         self.dirty.store(false,Ordering::Release);
+    }
+    fn set_enabled(&self, enabled:bool){self.enabled.store(enabled,Ordering::Release);}
+    fn clear(&self){
+        if let Ok(mut events)=self.events.lock(){events.clear();}
+        self.dirty.store(true,Ordering::Release);
     }
 }
 fn history_id(prefix:&str)->String{format!("{prefix}-{}-{}",now_ms(),std::process::id())}
@@ -761,6 +774,7 @@ impl MonitorStore {
             next.insert(target.id.clone(), TargetMonitor::new(target.clone()));
         }
         self.targets = next;
+        self.history.set_enabled(config.history_enabled);
         self.config = config;
     }
     fn summaries(&self) -> Vec<Value> { self.targets.values().map(TargetMonitor::summary).collect() }
@@ -780,6 +794,7 @@ fn default_target() -> MonitorTarget {
 fn default_config() -> StoredConfig {
     StoredConfig {
         targets: vec![default_target()], target_card_order: vec![DEFAULT_TARGET_ID.into()], monitoring: MonitoringSettings::new_defaults(), alerts: LegacyAlertConfig::default(), alert_rules: vec![],
+        history_enabled: true,
         show_in_sidebar: true,
         show_network_identity_topbar: false, network_identity_topbar_source: default_network_identity_topbar_source(),
         network_identity_auto_refresh: default_network_identity_auto_refresh(),
@@ -1907,6 +1922,17 @@ fn main()->Result<(),String>{
                 let rows=history.snapshot();
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:history_query(&rows,&request.params,true),error:String::new()}
             }
+            "monitor.history.clear"=>{
+                let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
+                history.clear();
+                match save_history(&mut input,&output_tx,&mut host_request_id,&history){
+                    Ok(())=>{
+                        let _=send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"monitor.history.changed",payload:json!({"cleared":true})});
+                        PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"cleared":true}),error:String::new()}
+                    }
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
             "monitor.alert.stats"=>{
                 let target_id=request.params.get("targetId").and_then(Value::as_str).unwrap_or("");
                 let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
@@ -2334,6 +2360,22 @@ mod tests {
         assert_eq!(tray_item["series"][0]["color"],"#aa33cc");
     }
     #[test] fn ping_tracks_last_reachable_and_offline_since(){let mut m=TargetMonitor::new(default_target());m.last_state="NORMAL".into();m.pending_state="NORMAL".into();m.record_ping(&json!({"state":"NORMAL","latencyMs":12.0,"packetLossPercent":0.0}),3600);let reachable=m.last_reachable_at;assert!(reachable.is_some());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert!(m.offline_since.is_none());m.record_ping(&json!({"state":"OFFLINE","latencyMs":Value::Null,"packetLossPercent":100.0}),3600);assert_eq!(m.last_state,"OFFLINE");assert!(m.offline_since.is_some());assert_eq!(m.last_reachable_at,reachable);m.record_ping(&json!({"state":"NORMAL","latencyMs":10.0,"packetLossPercent":0.0}),3600);m.record_ping(&json!({"state":"NORMAL","latencyMs":11.0,"packetLossPercent":0.0}),3600);assert_eq!(m.last_state,"NORMAL");assert!(m.offline_since.is_none());assert!(m.last_reachable_at.unwrap()>=reachable.unwrap());}
+    #[test] fn history_enable_disable_and_clear_preserve_existing_records_until_clear(){
+        let history=HistoryState::default();
+        let event=HistoryEvent{
+            id:"one".into(),timestamp:1,target_id:None,target_name:None,event_type:"Alert".into(),source:"test".into(),source_label:"Test".into(),
+            name:"First".into(),value:String::new(),old_value:String::new(),new_value:String::new(),status:"Warning".into(),
+            sound:false,notification:false,acknowledged:false,reminder:false,details:String::new(),
+        };
+        history.record(event.clone());
+        assert_eq!(history.snapshot().len(),1);
+        history.set_enabled(false);
+        history.record(HistoryEvent{id:"two".into(),..event});
+        assert_eq!(history.snapshot().len(),1);
+        history.clear();
+        assert!(history.snapshot().is_empty());
+    }
+
     #[test] fn replace_config_prunes_removed_tcp_results(){let mut s=MonitorStore::new();let mut c=s.config.clone();c.targets[0].tcp_checks=vec![TcpCheck{id:"keep".into(),name:"Keep".into(),port:80,enabled:true,alert_rule_ids:vec![]},TcpCheck{id:"drop".into(),name:"Drop".into(),port:22,enabled:true,alert_rule_ids:vec![]}];s.replace_config(c.clone());let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.tcp_results.insert("keep".into(),TcpResult{id:"keep".into(),name:"Keep".into(),port:80,reachable:true,latency_ms:Some(1.0),error:None,timestamp:1});m.tcp_results.insert("drop".into(),TcpResult{id:"drop".into(),name:"Drop".into(),port:22,reachable:false,latency_ms:None,error:None,timestamp:1});c.targets[0].tcp_checks.retain(|x|x.id=="keep");s.replace_config(c);let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();assert_eq!(m.tcp_results.len(),1);assert!(m.tcp_results.contains_key("keep"));assert!(!m.tcp_results.contains_key("drop"));}
     #[test] fn replace_config_prunes_active_alert_when_rule_is_deleted(){
         let mut s=MonitorStore::new();
