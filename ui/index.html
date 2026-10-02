@@ -60,11 +60,12 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{width:100
     </div>
     <div class="settings-section">
       <h3>History</h3>
+      <label class="checkline"><input id="settingHistoryEnabled" type="checkbox"> Enable Alerts History</label>
       <div class="fields">
         <div class="field"><label>Metric history retention</label><div class="duration-input"><input id="settingHistoryValue" type="number" min="1" step="1"><select id="settingHistoryUnit"><option value="1">seconds</option><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></div></div>
         <div class="field"><label>Top-bar graph history</label><div class="duration-input"><input id="settingTopbarValue" type="number" min="1" step="1"><select id="settingTopbarUnit"><option value="1">seconds</option><option value="60">minutes</option></select></div></div>
       </div>
-      <p class="muted">History windows are time-based, so they remain accurate even when probe types use different sampling intervals.</p>
+      <p class="muted">Disabling Alerts History stops new alert/history events from being saved. Existing saved History remains available until you clear it.</p>
     </div>
     <div class="settings-section">
       <h3>RemoteHand integration</h3>
@@ -121,7 +122,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{width:100
   </div>
 </section>
 <section id="historyPanel" class="panel">
-  <div class="section-title"><h2>History</h2><div class="spacer"></div><div class="history-actions"><button id="historyRefresh" class="btn" type="button">Refresh</button><button id="historyExport" class="btn" type="button">Export CSV</button></div></div>
+  <div class="section-title"><h2>History</h2><div class="spacer"></div><div class="history-actions"><button id="historyRefresh" class="btn" type="button">Refresh</button><button id="historyExport" class="btn" type="button">Export CSV</button><button id="historyDelete" class="btn" type="button">Clear History</button></div></div>
   <div class="card">
     <div class="history-toolbar">
       <div class="field"><label>Search</label><input id="historySearch" type="search" placeholder="Search events, targets, values…"></div>
@@ -415,6 +416,7 @@ function renderSettings(){
   $("settingHistoryValue").value=hist[0];$("settingHistoryUnit").value=String(hist[1]);
   const top=splitDuration(m.topbarHistorySeconds??60,[60,1]);
   $("settingTopbarValue").value=top[0];$("settingTopbarUnit").value=String(top[1]);
+  $("settingHistoryEnabled").checked=state.config.historyEnabled!==false;
   $("settingShowInSidebar").checked=state.config.showInSidebar!==false;
 }
 function networkCopyButton(value,label){
@@ -562,6 +564,16 @@ $("historyNext").onclick=()=>{const pages=Math.max(1,Math.ceil(historyState.tota
 document.querySelectorAll("[data-history-sort]").forEach(th=>th.onclick=()=>{const key=th.dataset.historySort;if(historyState.sortBy===key)historyState.sortDir=historyState.sortDir==="asc"?"desc":"asc";else{historyState.sortBy=key;historyState.sortDir=key==="timestamp"?"desc":"asc"}historyState.page=1;void loadHistory(true)});
 $("historyClear").onclick=()=>{["historySearch","historyFrom","historyTo"].forEach(id=>$(id).value="");["historyTarget","historyType","historySource","historyStatus"].forEach(id=>$(id).value="");historyState.page=1;historyState.sortBy="timestamp";historyState.sortDir="desc";void loadHistory(true)};
 $("historyRefresh").onclick=()=>void loadHistory(true);
+$("historyDelete").onclick=async()=>{
+  if(!confirm("Clear all saved Target Monitor History? This cannot be undone."))return;
+  const button=$("historyDelete");button.disabled=true;
+  try{
+    await request("monitor.history.clear");
+    historyState.page=1;
+    await loadHistory(true);
+    notice("History cleared.","success");
+  }catch(e){notice(String(e),"error")}finally{button.disabled=false}
+};
 function csvCell(value){const text=String(value??"");return /[",\r\n]/.test(text)?'"'+text.replaceAll('"','""')+'"':text}
 $("historyExport").onclick=async()=>{
   const button=$("historyExport");button.disabled=true;button.textContent="Exporting…";
@@ -750,9 +762,10 @@ $("saveRule").onclick=async()=>{try{const r=ruleDraft();r.name=$("rName").value.
 function ruleAssignmentLocations(ruleId){const out=[];for(const t of state.config.targets||[]){for(const check of t.tcpChecks||[]){if((check.alertRuleIds||[]).includes(ruleId))out.push(`${t.name} → ${check.name} → reachable`)}for(const check of t.httpChecks||[]){for(const [field,ids] of Object.entries(check.fieldAlerts||{})){if((ids||[]).includes(ruleId))out.push(`${t.name} → ${check.name} → ${field}`)}}}return out}
 function removeRule(ruleId){const rule=(state.config.alertRules||[]).find(r=>r.id===ruleId);if(!rule)return;pendingDeleteRuleId=ruleId;const uses=ruleAssignmentLocations(ruleId);$("ruleDeleteMessage").innerHTML=`<p><strong>${esc(rule.name)}</strong> is currently used by ${uses.length} source${uses.length===1?"":"s"}.</p><p>${uses.length?"Deleting this rule will also remove it from those assignments.":"This rule is not currently assigned."}</p><p class="muted">Targets and checks are not deleted; only this reusable rule and its assignments are removed.</p>`;$("ruleDeleteAssignments").hidden=!uses.length;$("ruleDeleteAssignments").innerHTML=uses.map(x=>`<div>${esc(x)}</div>`).join("");open("ruleDeleteModal")}
 $("confirmDeleteRule").onclick=async()=>{const ruleId=pendingDeleteRuleId;if(!ruleId)return close("ruleDeleteModal");for(const t of state.config.targets||[]){for(const check of t.tcpChecks||[]){check.alertRuleIds=(check.alertRuleIds||[]).filter(id=>id!==ruleId)}for(const check of t.httpChecks||[]){for(const field of Object.keys(check.fieldAlerts||{})){check.fieldAlerts[field]=(check.fieldAlerts[field]||[]).filter(id=>id!==ruleId);if(!check.fieldAlerts[field].length)delete check.fieldAlerts[field]}}}state.config.alertRules=(state.config.alertRules||[]).filter(r=>r.id!==ruleId);pendingDeleteRuleId=null;close("ruleDeleteModal");await persist("Alert rule and assignments removed.")}
-for(const id of ["settingPingInterval","settingTcpInterval","settingHttpInterval","settingHistoryValue","settingHistoryUnit","settingTopbarValue","settingTopbarUnit","settingShowInSidebar"]){$(id).addEventListener("input",()=>settingsDirty=true);$(id).addEventListener("change",()=>settingsDirty=true)}
+for(const id of ["settingPingInterval","settingTcpInterval","settingHttpInterval","settingHistoryEnabled","settingHistoryValue","settingHistoryUnit","settingTopbarValue","settingTopbarUnit","settingShowInSidebar"]){$(id).addEventListener("input",()=>settingsDirty=true);$(id).addEventListener("change",()=>settingsDirty=true)}
 $("resetMonitoringSettings").onclick=()=>{
   $("settingPingInterval").value=2;$("settingTcpInterval").value=5;$("settingHttpInterval").value=10;
+  $("settingHistoryEnabled").checked=true;
   $("settingHistoryValue").value=1;$("settingHistoryUnit").value="3600";
   $("settingTopbarValue").value=1;$("settingTopbarUnit").value="60";
   settingsDirty=true;
@@ -766,6 +779,7 @@ $("saveMonitoringSettings").onclick=async()=>{
   if(!Number.isFinite(history)||history<60||history>604800)return notice("Metric history retention must be between 1 minute and 7 days.","error");
   if(!Number.isFinite(topbar)||topbar<10||topbar>3600)return notice("Top-bar history must be between 10 seconds and 1 hour.","error");
   state.config.monitoring={pingIntervalSeconds:ping,tcpIntervalSeconds:tcp,httpIntervalSeconds:http,historyRetentionSeconds:history,topbarHistorySeconds:topbar};
+  state.config.historyEnabled=$("settingHistoryEnabled").checked;
   state.config.showInSidebar=$("settingShowInSidebar").checked;
   const ok=await persist("Monitoring settings saved.");
   settingsDirty=false;
