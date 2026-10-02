@@ -1383,6 +1383,21 @@ fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut T
         }
     } else { None };
     let Some((kind,label,rule,reminder))=selection else{return};
+    if !reminder {
+        match kind {
+            "recovery" => {
+                monitor.last_legacy_alert_at.remove("highLatency");
+                monitor.last_legacy_alert_at.remove("offline");
+            }
+            "highLatency" => {
+                monitor.last_legacy_alert_at.remove("recovery");
+            }
+            "offline" => {
+                monitor.last_legacy_alert_at.remove("recovery");
+            }
+            _ => {}
+        }
+    }
     let play_sound=alerts.enabled && rule.sound_enabled();
     let show_notification=rule.notification_enabled() && monitor.target.show_alert_notifications;
     let now=now_ms();
@@ -2377,6 +2392,49 @@ mod tests {
         assert_eq!(history.snapshot().len(),1);
         history.clear();
         assert!(history.snapshot().is_empty());
+    }
+
+    #[test] fn disabled_history_does_not_disable_ping_high_latency_or_offline_delivery(){
+        let history=HistoryState::default();
+        history.set_enabled(false);
+        let alerts=LegacyAlertConfig::default();
+        let mut monitor=TargetMonitor::new(default_target());
+        monitor.target.show_alert_notifications=true;
+        let (tx,rx)=mpsc::channel::<Value>();
+
+        legacy_alert(&tx,&history,&mut monitor,&alerts,Some(("NORMAL".into(),"HIGH LATENCY".into())));
+        let high=rx.try_iter().collect::<Vec<_>>();
+        assert!(high.iter().any(|event|event["event"]==json!("monitor.alert")&&event["payload"]["alertType"]==json!("highLatency")));
+        assert!(high.iter().any(|event|event["event"]==json!("notification.show")));
+        assert!(history.snapshot().is_empty());
+
+        legacy_alert(&tx,&history,&mut monitor,&alerts,Some(("HIGH LATENCY".into(),"OFFLINE".into())));
+        let offline=rx.try_iter().collect::<Vec<_>>();
+        assert!(offline.iter().any(|event|event["event"]==json!("monitor.alert")&&event["payload"]["alertType"]==json!("offline")));
+        assert!(offline.iter().any(|event|event["event"]==json!("notification.show")));
+        assert!(history.snapshot().is_empty());
+    }
+
+    #[test] fn recovery_resets_ping_alert_cooldowns_for_fresh_transitions(){
+        let history=HistoryState::default();
+        history.set_enabled(false);
+        let alerts=LegacyAlertConfig::default();
+        let mut monitor=TargetMonitor::new(default_target());
+        monitor.target.show_alert_notifications=true;
+        let (tx,rx)=mpsc::channel::<Value>();
+
+        legacy_alert(&tx,&history,&mut monitor,&alerts,Some(("NORMAL".into(),"HIGH LATENCY".into())));
+        let _=rx.try_iter().collect::<Vec<_>>();
+        assert!(monitor.last_legacy_alert_at.contains_key("highLatency"));
+
+        legacy_alert(&tx,&history,&mut monitor,&alerts,Some(("HIGH LATENCY".into(),"NORMAL".into())));
+        let _=rx.try_iter().collect::<Vec<_>>();
+        assert!(!monitor.last_legacy_alert_at.contains_key("highLatency"));
+
+        legacy_alert(&tx,&history,&mut monitor,&alerts,Some(("NORMAL".into(),"HIGH LATENCY".into())));
+        let repeated=rx.try_iter().collect::<Vec<_>>();
+        assert!(repeated.iter().any(|event|event["event"]==json!("monitor.alert")&&event["payload"]["alertType"]==json!("highLatency")));
+        assert!(repeated.iter().any(|event|event["event"]==json!("notification.show")));
     }
 
     #[test] fn disabled_history_does_not_disable_generic_alert_delivery(){
