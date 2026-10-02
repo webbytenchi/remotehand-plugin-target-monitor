@@ -495,8 +495,8 @@ impl Default for HistoryState {
     }
 }
 impl HistoryState {
-    fn record(&self, event: HistoryEvent) {
-        if !self.enabled.load(Ordering::Acquire) { return; }
+    fn record(&self, event: HistoryEvent) -> bool {
+        if !self.enabled.load(Ordering::Acquire) { return false; }
         if let Ok(mut events)=self.events.lock() {
             events.push(event);
             if events.len()>MAX_HISTORY_EVENTS {
@@ -504,7 +504,9 @@ impl HistoryState {
                 events.drain(0..remove);
             }
             self.dirty.store(true,Ordering::Release);
+            return true;
         }
+        false
     }
     fn snapshot(&self)->Vec<HistoryEvent>{self.events.lock().map(|events|events.clone()).unwrap_or_default()}
     fn replace(&self, mut events:Vec<HistoryEvent>){
@@ -528,8 +530,9 @@ fn target_history_event(monitor:&TargetMonitor,event_type:&str,source:&str,name:
 }
 fn record_history(output:&mpsc::Sender<Value>,history:&HistoryState,event:HistoryEvent){
     let payload=json!({"timestamp":event.timestamp,"targetId":event.target_id,"eventType":event.event_type});
-    history.record(event);
-    let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.history.changed",payload});
+    if history.record(event) {
+        let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.history.changed",payload});
+    }
 }
 
 
@@ -2367,13 +2370,32 @@ mod tests {
             name:"First".into(),value:String::new(),old_value:String::new(),new_value:String::new(),status:"Warning".into(),
             sound:false,notification:false,acknowledged:false,reminder:false,details:String::new(),
         };
-        history.record(event.clone());
+        assert!(history.record(event.clone()));
         assert_eq!(history.snapshot().len(),1);
         history.set_enabled(false);
-        history.record(HistoryEvent{id:"two".into(),..event});
+        assert!(!history.record(HistoryEvent{id:"two".into(),..event}));
         assert_eq!(history.snapshot().len(),1);
         history.clear();
         assert!(history.snapshot().is_empty());
+    }
+
+    #[test] fn disabled_history_does_not_disable_generic_alert_delivery(){
+        let history=HistoryState::default();
+        history.set_enabled(false);
+        let mut monitor=TargetMonitor::new(default_target());
+        monitor.target.show_alert_notifications=true;
+        let rule=GenericAlertRule{
+            id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),
+            unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,
+            reminders_enabled:false,reminder_interval_seconds:300,
+        };
+        let (tx,rx)=mpsc::channel::<Value>();
+        evaluate_rules(&tx,&history,&mut monitor,&[rule],"http:sys.temp",json!(60),&["hot".into()]);
+        let events=rx.try_iter().collect::<Vec<_>>();
+        assert!(events.iter().any(|event|event["event"]==json!("monitor.alert")));
+        assert!(events.iter().any(|event|event["event"]==json!("notification.show")));
+        assert!(history.snapshot().is_empty());
+        assert!(!events.iter().any(|event|event["event"]==json!("monitor.history.changed")));
     }
 
     #[test] fn replace_config_prunes_removed_tcp_results(){let mut s=MonitorStore::new();let mut c=s.config.clone();c.targets[0].tcp_checks=vec![TcpCheck{id:"keep".into(),name:"Keep".into(),port:80,enabled:true,alert_rule_ids:vec![]},TcpCheck{id:"drop".into(),name:"Drop".into(),port:22,enabled:true,alert_rule_ids:vec![]}];s.replace_config(c.clone());let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();m.tcp_results.insert("keep".into(),TcpResult{id:"keep".into(),name:"Keep".into(),port:80,reachable:true,latency_ms:Some(1.0),error:None,timestamp:1});m.tcp_results.insert("drop".into(),TcpResult{id:"drop".into(),name:"Drop".into(),port:22,reachable:false,latency_ms:None,error:None,timestamp:1});c.targets[0].tcp_checks.retain(|x|x.id=="keep");s.replace_config(c);let m=s.targets.get(DEFAULT_TARGET_ID).unwrap();assert_eq!(m.tcp_results.len(),1);assert!(m.tcp_results.contains_key("keep"));assert!(!m.tcp_results.contains_key("drop"));}
