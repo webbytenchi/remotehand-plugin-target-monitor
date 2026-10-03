@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.6** is the current Target Monitor release.
+**Target Monitor v0.7.9** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -33,6 +33,9 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - independent Sound and Notification delivery controls for Ping and reusable alerts
 - full-width responsive target cards that make better use of the available RemoteHand panel width
 - drag-to-reorder target cards with persisted plugin-owned card order and a Reset order action
+- Enable Alerts History setting that stops new History persistence without disabling alert evaluation, sound, notifications, reminders, or recovery
+- Clear History with an in-app confirmation flow
+- easier From/To History filtering through an in-app calendar/time picker with calendar icons
 
 See `V0.7.0-DESIGN.md` for the delivered product model.
 
@@ -239,7 +242,7 @@ If the condition triggers again after resolving, it becomes a new alert event.
 
 ## Native notifications
 
-Target Monitor v0.7.6 can request native Windows notifications through RemoteHand's generic plugin notification capability.
+Target Monitor v0.7.9 can request native Windows notifications through RemoteHand's generic plugin notification capability.
 
 Per target, the user may independently choose:
 
@@ -275,6 +278,12 @@ For HTTP / HTTPS checks, Target Reports show only fields explicitly marked Expos
 Exposed HTTP field tables also show any reusable alert rules assigned to each field, plus **Triggered** and **Last triggered** statistics for each configured rule. These statistics are derived from retained persistent History: reminders are excluded from the trigger count, and the values represent retained History rather than lifetime totals.
 
 ## History
+
+Disabling **Alerts History** stops new persistent History entries only. It does not disable monitoring, alert evaluation, active-alert state, Ping/reusable alert delivery, sounds, notifications, reminders, or recovery. Existing saved History remains available until explicitly cleared.
+
+The History view supports search, filters, sorting, pagination, CSV export, Clear History, and From/To filtering through an in-app calendar/time picker.
+
+
 
 Target Monitor maintains a bounded persistent event history for operational events including:
 
