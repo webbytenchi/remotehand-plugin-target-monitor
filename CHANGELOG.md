@@ -25,6 +25,7 @@
 - History disabling does not delete existing saved History.
 
 ### Verification
+- Exact-main Rust validation passed with **68 tests and 0 failures**.
 - Focused regression coverage verifies disabled History does not suppress reusable-alert or Ping High Latency/Offline delivery and does not persist new History entries.
 - Optimized Windows package builds passed during feature validation.
 - Manual Windows acceptance covered History disable behavior, Ping High Latency/Offline/Recovery delivery, Clear History, and the From/To picker/calendar-icon UX.
