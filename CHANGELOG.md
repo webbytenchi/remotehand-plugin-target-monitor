@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.7.9 - 2026-10-03
+
+### Added
+- **Enable Alerts History** setting for persistent Target Monitor History.
+- **Clear History** action with an in-app confirmation dialog.
+- Friendly in-app From/To date-time pickers with calendar navigation, hour/minute selection, AM/PM, Now, Clear, Cancel, and Apply actions.
+- Calendar icons inside the History From and To fields.
+
+### Improved
+- Disabling Alerts History now stops only new History persistence. Monitoring, active-alert state, Ping/reusable alert evaluation, sounds, native notifications, reminders, and recovery behavior remain independent.
+- Existing saved History remains available while History is disabled until explicitly cleared.
+- History date-range filtering is easier to use while preserving the existing sortable/filterable/paginated History model.
+
+### Fixed
+- Clear History now uses the plugin's in-app modal flow instead of the WebView-native confirmation path.
+- Disabled History no longer emits false History-changed notifications for events that were not stored.
+- Ping High Latency and Offline alerts continue to deliver correctly with History disabled.
+- Recovery now clears stale Ping alert cooldown state so a fresh High Latency or Offline transition can alert again immediately after recovery.
+
+### Compatibility
+- Plugin API remains **v1**.
+- Existing targets, Ping/TCP/HTTP monitoring, reusable alerts, Network Identity, reports, top-bar/tray configuration, and retained History remain compatible.
+- History disabling does not delete existing saved History.
+
+### Verification
+- Focused regression coverage verifies disabled History does not suppress reusable-alert or Ping High Latency/Offline delivery and does not persist new History entries.
+- Optimized Windows package builds passed during feature validation.
+- Manual Windows acceptance covered History disable behavior, Ping High Latency/Offline/Recovery delivery, Clear History, and the From/To picker/calendar-icon UX.
+
+
 ## 0.7.8 - 2026-09-29
 
 ### Added
