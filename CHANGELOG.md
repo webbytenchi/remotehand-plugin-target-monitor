@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.10 - 2026-10-08
+
+### Added
+- Generic HTTP/HTTPS authentication for Target Monitor requests.
+- Bearer Token, API Key, and Basic Authentication modes.
+- Per-request authentication controls with masked credential fields.
+- HTTP authentication is applied to both Test / Preview requests and background monitoring.
+
+### Compatibility
+- Existing unauthenticated HTTP/HTTPS checks remain unchanged.
+- Plugin API remains **v1**.
+
 ## 0.7.9 - 2026-10-03
 
 ### Added
