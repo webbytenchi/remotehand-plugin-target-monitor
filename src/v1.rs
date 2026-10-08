@@ -239,6 +239,36 @@ struct TcpCheck {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct HttpAuthentication {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    auth_type: String,
+    #[serde(default = "default_http_api_key_header")]
+    header_name: String,
+    #[serde(default)]
+    credential: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+}
+fn default_http_api_key_header() -> String { "X-API-Key".to_string() }
+impl Default for HttpAuthentication {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auth_type: "bearer".to_string(),
+            header_name: default_http_api_key_header(),
+            credential: String::new(),
+            username: String::new(),
+            password: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HttpCheck {
     id: String,
     name: String,
@@ -259,6 +289,8 @@ struct HttpCheck {
     exposed_fields: Vec<String>,
     #[serde(default)]
     field_alerts: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    authentication: HttpAuthentication,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -896,6 +928,35 @@ fn validate_config(config: &StoredConfig) -> Result<(), String> {
             if check.id.trim().is_empty() || !check_ids.insert(check.id.clone()) { return Err("HTTP check ids must be unique".into()); }
             if check.name.trim().is_empty() || !(check.url.starts_with("http://") || check.url.starts_with("https://")) { return Err("HTTP checks require a name and http(s) URL".into()); }
             if !check.regex.is_empty() { Regex::new(&check.regex).map_err(|e| format!("invalid regex for {}: {e}", check.name))?; }
+            if check.authentication.enabled {
+                match check.authentication.auth_type.as_str() {
+                    "bearer" => {
+                        if check.authentication.credential.trim().is_empty() || check.authentication.credential.len() > 4096 {
+                            return Err(format!("HTTP check {} bearer token is required and must be 4096 characters or fewer", check.name));
+                        }
+                    }
+                    "apiKey" => {
+                        if !valid_http_header_name(check.authentication.header_name.trim()) {
+                            return Err(format!("HTTP check {} API key header name is invalid", check.name));
+                        }
+                        if check.authentication.credential.is_empty() || check.authentication.credential.len() > 4096 {
+                            return Err(format!("HTTP check {} API key is required and must be 4096 characters or fewer", check.name));
+                        }
+                    }
+                    "basic" => {
+                        if check.authentication.username.len() > 1024 || check.authentication.password.len() > 4096 {
+                            return Err(format!("HTTP check {} Basic authentication credentials are too long", check.name));
+                        }
+                    }
+                    _ => return Err(format!("unsupported HTTP authentication type: {}", check.authentication.auth_type)),
+                }
+                if check.authentication.credential.contains(['\r','\n'])
+                    || check.authentication.username.contains(['\r','\n'])
+                    || check.authentication.password.contains(['\r','\n'])
+                {
+                    return Err(format!("HTTP check {} authentication credentials cannot contain CR/LF", check.name));
+                }
+            }
             for ids in check.field_alerts.values() { for id in ids { if !rule_ids.contains(id) { return Err(format!("unknown alert rule: {id}")); } } }
         }
     }
@@ -1286,9 +1347,60 @@ fn extract_fields(mode:&str,pattern:&str,body:&str,content_type:&str)->Result<BT
     }
     Ok(out)
 }
+fn valid_http_header_name(value:&str)->bool {
+    const EXTRA: &str = "!#$%&'*+-." ;
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || EXTRA.bytes().any(|allowed| allowed == b) || b == b'^' || b == b'_' || b == b'|' || b == b'~' || b == 96)
+}
+fn http_auth_header(auth:&HttpAuthentication)->Result<Option<(String,String)>,String> {
+    if !auth.enabled {
+        return Ok(None);
+    }
+    match auth.auth_type.as_str() {
+        "bearer" => {
+            if auth.credential.trim().is_empty() || auth.credential.len() > 4096 {
+                return Err("Bearer token is required and must be 4096 characters or fewer".into());
+            }
+            if auth.credential.contains(['\r','\n']) {
+                return Err("Bearer token cannot contain CR/LF".into());
+            }
+            Ok(Some(("Authorization".into(), format!("Bearer {}", auth.credential.trim()))))
+        }
+        "apiKey" => {
+            if !valid_http_header_name(auth.header_name.trim()) {
+                return Err("API key header name is invalid".into());
+            }
+            if auth.credential.is_empty() || auth.credential.len() > 4096 {
+                return Err("API key is required and must be 4096 characters or fewer".into());
+            }
+            if auth.credential.contains(['\r','\n']) {
+                return Err("API key cannot contain CR/LF".into());
+            }
+            Ok(Some((auth.header_name.trim().to_string(), auth.credential.clone())))
+        }
+        "basic" => {
+            if auth.username.len() > 1024 || auth.password.len() > 4096 {
+                return Err("Basic authentication credentials are too long".into());
+            }
+            if auth.username.contains(['\r','\n']) || auth.password.contains(['\r','\n']) {
+                return Err("Basic authentication credentials cannot contain CR/LF".into());
+            }
+            let raw = format!("{}:{}", auth.username, auth.password);
+            Ok(Some(("Authorization".into(), format!("Basic {}", BASE64_STANDARD.encode(raw.as_bytes())))))
+        }
+        _ => Err(format!("unsupported HTTP authentication type: {}", auth.auth_type)),
+    }
+}
 fn sample_http(check:&HttpCheck)->HttpResult{
     let start=Instant::now();
-    let call=ureq::get(&check.url).timeout(HTTP_TIMEOUT).call();
+    let mut request=ureq::get(&check.url).timeout(HTTP_TIMEOUT);
+    match http_auth_header(&check.authentication) {
+        Ok(Some((name,value))) => { request=request.set(&name,&value); }
+        Ok(None) => {}
+        Err(error) => return HttpResult{id:check.id.clone(),name:check.name.clone(),url:check.url.clone(),status_code:None,response_time_ms:Some(start.elapsed().as_secs_f64()*1000.0),content_type:String::new(),body:String::new(),fields:BTreeMap::new(),error:Some(error),timestamp:now_ms()},
+    }
+    let call=request.call();
     let (status,response)=match call { Ok(r)=>(Some(r.status()),Some(r)), Err(ureq::Error::Status(code,r))=>(Some(code),Some(r)), Err(e)=>return HttpResult{id:check.id.clone(),name:check.name.clone(),url:check.url.clone(),status_code:None,response_time_ms:Some(start.elapsed().as_secs_f64()*1000.0),content_type:String::new(),body:String::new(),fields:BTreeMap::new(),error:Some(e.to_string()),timestamp:now_ms()} };
     let content_type=response.as_ref().and_then(|r|r.header("content-type")).unwrap_or("").to_string();
     let body=response.unwrap().into_string().unwrap_or_default();
@@ -2077,8 +2189,35 @@ mod tests {
     #[test] fn network_identity_custom_sound_counts_toward_sound_budget(){let mut c=default_config();c.network_identity_change_sound_config=Some(SoundConfig{filename:"test.wav".into(),mime:"audio/wav".into(),data_url:"data:audio/wav;base64,AA==".into(),size_bytes:1024,duration_ms:500});assert!(validate_config(&c).is_ok());}
     #[test] fn network_identity_initial_snapshot_is_not_a_change(){let mut first=NetworkIdentity::default();first.public_ip=Some("203.0.113.1".into());assert!(network_identity_change_details(&NetworkIdentity::default(),&first).is_empty());}
     #[test] fn network_identity_change_detects_public_ip_update(){let mut a=NetworkIdentity::default();a.public_ip=Some("203.0.113.1".into());a.updated_at=Some(1);let mut b=a.clone();b.public_ip=Some("203.0.113.2".into());b.updated_at=Some(2);assert_eq!(network_identity_change_details(&a,&b).len(),1);}
-    #[test] fn history_source_uses_human_label(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::new()});let event=target_history_event(monitor,"Alert","http:api.temp","Hot","65".into(),"Triggered",false,false,false,String::new());assert_eq!(event.source_label,"System Info · temp");}
-    #[test] fn topbar_tooltip_includes_exposed_http_fields_and_missing_values(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:vec!["identity.fwVersion".into(),"identity.hwModel".into()],field_alerts:BTreeMap::new()});monitor.http_results.insert("api".into(),HttpResult{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),status_code:Some(200),response_time_ms:Some(12.0),content_type:"application/json".into(),body:String::new(),fields:BTreeMap::from([("identity.fwVersion".into(),json!("v2.0.03"))]),error:None,timestamp:now_ms()});let tip=surface_tooltip(monitor,"none","none");assert!(tip.contains("System Info · identity.fwVersion: v2.0.03"));assert!(tip.contains("System Info · identity.hwModel: —"));}
+    #[test] fn history_source_uses_human_label(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::new(),authentication:HttpAuthentication::default()});let event=target_history_event(monitor,"Alert","http:api.temp","Hot","65".into(),"Triggered",false,false,false,String::new());assert_eq!(event.source_label,"System Info · temp");}
+    #[test] fn http_auth_headers_build_expected_values(){
+        let mut auth=HttpAuthentication::default();
+        assert_eq!(http_auth_header(&auth).unwrap(),None);
+        auth.enabled=true;
+        auth.auth_type="bearer".into();
+        auth.credential="test-token".into();
+        assert_eq!(http_auth_header(&auth).unwrap(),Some(("Authorization".into(),"Bearer test-token".into())));
+        auth.auth_type="apiKey".into();
+        auth.header_name="X-Test-Key".into();
+        auth.credential="abc123".into();
+        assert_eq!(http_auth_header(&auth).unwrap(),Some(("X-Test-Key".into(),"abc123".into())));
+        auth.auth_type="basic".into();
+        auth.username="alice".into();
+        auth.password="secret".into();
+        assert_eq!(http_auth_header(&auth).unwrap(),Some(("Authorization".into(),"Basic YWxpY2U6c2VjcmV0".into())));
+    }
+    #[test] fn http_auth_rejects_invalid_header_and_line_breaks(){
+        let mut auth=HttpAuthentication::default();
+        auth.enabled=true;
+        auth.auth_type="apiKey".into();
+        auth.header_name="Bad Header".into();
+        auth.credential="abc".into();
+        assert!(http_auth_header(&auth).is_err());
+        auth.header_name="X-Key".into();
+        auth.credential="abc\n123".into();
+        assert!(http_auth_header(&auth).is_err());
+    }
+    #[test] fn topbar_tooltip_includes_exposed_http_fields_and_missing_values(){let mut store=MonitorStore::new();let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();monitor.target.http_checks.push(HttpCheck{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:vec!["identity.fwVersion".into(),"identity.hwModel".into()],field_alerts:BTreeMap::new(),authentication:HttpAuthentication::default()});monitor.http_results.insert("api".into(),HttpResult{id:"api".into(),name:"System Info".into(),url:"https://example.com".into(),status_code:Some(200),response_time_ms:Some(12.0),content_type:"application/json".into(),body:String::new(),fields:BTreeMap::from([("identity.fwVersion".into(),json!("v2.0.03"))]),error:None,timestamp:now_ms()});let tip=surface_tooltip(monitor,"none","none");assert!(tip.contains("System Info · identity.fwVersion: v2.0.03"));assert!(tip.contains("System Info · identity.hwModel: —"));}
     #[test] fn history_query_filters_and_sorts(){let events=vec![
         HistoryEvent{id:"1".into(),timestamp:1,target_id:Some("a".into()),target_name:Some("A".into()),event_type:"Alert".into(),source:"ping.latency".into(),source_label:"Ping latency".into(),name:"Offline".into(),value:"Unavailable".into(),old_value:String::new(),new_value:String::new(),status:"Triggered".into(),sound:true,notification:true,acknowledged:false,reminder:false,details:String::new()},
         HistoryEvent{id:"2".into(),timestamp:2,target_id:None,target_name:None,event_type:"Network Identity".into(),source:"Network Identity".into(),source_label:"Network Identity".into(),name:"Network Identity changed".into(),value:"1 change".into(),old_value:String::new(),new_value:String::new(),status:"Changed".into(),sound:false,notification:false,acknowledged:false,reminder:false,details:"Public IP".into()},
@@ -2272,7 +2411,7 @@ mod tests {
             m.target.ping_enabled=false;
             m.target.graph_high_color="#112233".into();
             m.target.graph_critical_color="#445566".into();
-            m.target.http_checks.push(HttpCheck{id:"api".into(),name:"API".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::new()});
+            m.target.http_checks.push(HttpCheck{id:"api".into(),name:"API".into(),url:"https://example.com".into(),enabled:true,response_mode:"json".into(),regex:String::new(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::new(),authentication:HttpAuthentication::default()});
             m.target.graph_thresholds.insert("http:api.temp".into(),GraphThresholdConfig{
                 warning:Some(GraphThreshold{operator:">=".into(),value:55.0}),
                 critical:Some(GraphThreshold{operator:">=".into(),value:70.0}),
@@ -2462,7 +2601,7 @@ mod tests {
         let mut c=s.config.clone();
         let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
-        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
+        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])]),authentication:HttpAuthentication::default()});
         s.replace_config(c.clone());
         {
             let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
@@ -2482,7 +2621,7 @@ mod tests {
         let mut c=s.config.clone();
         let rule=GenericAlertRule{id:"hot".into(),name:"Hot".into(),enabled:true,operator:">=".into(),value:Some(json!(55)),unchanged_for_seconds:30,sound_enabled:true,notification_enabled:true,sound:None,reminders_enabled:false,reminder_interval_seconds:300};
         c.alert_rules.push(rule);
-        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])])});
+        c.targets[0].http_checks.push(HttpCheck{id:"sys".into(),name:"System Info".into(),url:"http://example.invalid".into(),enabled:true,response_mode:"json".into(),regex:"".into(),monitor_whole_response:false,detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:Vec::new(),field_alerts:BTreeMap::from([("temp".into(),vec!["hot".into()])]),authentication:HttpAuthentication::default()});
         s.replace_config(c.clone());
         {
             let m=s.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
