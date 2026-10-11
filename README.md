@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.10** is the current Target Monitor release.
+**Target Monitor v0.7.11** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -31,6 +31,7 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - per-target system-tray graph contributions
 - runtime RemoteHand sidebar visibility control
 - independent Sound and Notification delivery controls for Ping and reusable alerts
+- Ping Alert sound mute is respected without disabling native notifications or History
 - full-width responsive target cards that make better use of the available RemoteHand panel width
 - drag-to-reorder target cards with persisted plugin-owned card order and a Reset order action
 - Enable Alerts History setting that stops new History persistence without disabling alert evaluation, sound, notifications, reminders, or recovery
@@ -457,7 +458,7 @@ Panel ID:
 
 Current release version:
 
-    0.7.10
+    0.7.11
 
 ## Lineage
 
@@ -465,7 +466,7 @@ Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase
 
 Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor continues that product line as **v0.7.10**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+Target Monitor continues that product line as **v0.7.11**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
 
 ## Future alert delivery
 
