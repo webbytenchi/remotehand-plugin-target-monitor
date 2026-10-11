@@ -437,7 +437,7 @@ The clean Windows package directory is created at:
 
 The Windows build script also creates the versioned release ZIP and checksum file directly, for example:
 
-    dist\remotehand-target-monitor-v0.7.10-windows-x86_64.zip
+    dist\remotehand-target-monitor-v0.7.11-windows-x86_64.zip
     dist\SHA256SUMS.txt
 
 Install the package directory during development, or use the versioned ZIP through RemoteHand's ZIP install flow.
