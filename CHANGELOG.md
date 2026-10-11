@@ -3,8 +3,8 @@
 ## 0.7.11 - 2026-10-11
 
 ### Fixed
-- Respect the global Enable alert sounds setting for Ping Alerts without suppressing native notifications or History.
-- Muted Ping Alert transitions no longer emit the sound-triggering `monitor.alert` event.
+- Respect the global **Enable alert sounds** preference for Ping Alerts: when audio is muted, Ping transitions no longer emit the sound-triggering `monitor.alert` event.
+- Preserve native notifications and persistent History when Ping alert audio is muted; monitoring and alert evaluation remain enabled.
 
 ### Verification
 - Added regression coverage for muted Ping Alerts with notifications enabled; Windows build and runtime validation are pending.
