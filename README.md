@@ -31,7 +31,8 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - per-target system-tray graph contributions
 - runtime RemoteHand sidebar visibility control
 - independent Sound and Notification delivery controls for Ping and reusable alerts
-- Ping Alert sound mute is respected without disabling native notifications or History
+- The global **Enable alert sounds** preference is respected by Ping Alerts: when disabled, Ping alert transitions do not emit the sound-triggering `monitor.alert` event
+- Muting Ping alert sounds does not disable native notifications or persistent History
 - full-width responsive target cards that make better use of the available RemoteHand panel width
 - drag-to-reorder target cards with persisted plugin-owned card order and a Reset order action
 - Enable Alerts History setting that stops new History persistence without disabling alert evaluation, sound, notifications, reminders, or recovery
@@ -242,6 +243,10 @@ A monitored field may have zero, one, or multiple assigned alerts.
 Alerts are transition-based. A rule becomes active once, remains active while its condition is true, and resolves when the condition is no longer true.
 
 Optional reminders may repeat while an alert remains active.
+
+### Sound and notification delivery
+
+Sound playback and notification delivery are separate controls. The global **Enable alert sounds** preference suppresses Ping alert audio when turned off. Ping alert transitions still retain their native-notification and persistent-History behavior; muting audio does not disable monitoring, alert evaluation, or History recording.
 
 ## Alert acknowledgment
 
