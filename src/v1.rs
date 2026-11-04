@@ -1517,7 +1517,9 @@ fn legacy_alert(output:&mpsc::Sender<Value>,history:&HistoryState,monitor:&mut T
     if monitor.last_legacy_alert_at.get(kind).map(|last|now.saturating_sub(*last)<interval).unwrap_or(false){return;}
     monitor.last_legacy_alert_at.insert(kind.to_string(),now);
     let target=&monitor.target;
-    if play_sound || rule.notification_enabled() {
+    // RemoteHand may play sound for every monitor.alert event, regardless of playSound.
+    // Do not emit this event for a muted alert; native notifications are emitted separately below.
+    if play_sound {
         let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"monitor.alert",payload:json!({
             "targetId":target.id,"targetName":target.name,"alertType":kind,"ruleName":label,"source":"ping.latency",
             "reminder":reminder,"playSound":play_sound,"sound":sound_payload(&rule.sound),"fallbackBeep":play_sound && rule.sound.is_none()
@@ -2552,6 +2554,22 @@ mod tests {
         assert!(offline.iter().any(|event|event["event"]==json!("monitor.alert")&&event["payload"]["alertType"]==json!("offline")));
         assert!(offline.iter().any(|event|event["event"]==json!("notification.show")));
         assert!(history.snapshot().is_empty());
+    }
+
+    #[test] fn muted_ping_alert_keeps_notification_but_does_not_emit_sound_event(){
+        let history=HistoryState::default();
+        let mut alerts=LegacyAlertConfig::default();
+        alerts.enabled=false;
+        let mut monitor=TargetMonitor::new(default_target());
+        monitor.target.show_alert_notifications=true;
+        let (tx,rx)=mpsc::channel::<Value>();
+
+        legacy_alert(&tx,&history,&mut monitor,&alerts,Some(("NORMAL".into(),"HIGH LATENCY".into())));
+        let events=rx.try_iter().collect::<Vec<_>>();
+
+        assert!(!events.iter().any(|event|event["event"]==json!("monitor.alert")));
+        assert!(events.iter().any(|event|event["event"]==json!("notification.show")));
+        assert!(history.snapshot().iter().any(|event|event.event_type=="Ping"&&!event.sound&&event.notification));
     }
 
     #[test] fn recovery_resets_ping_alert_cooldowns_for_fresh_transitions(){

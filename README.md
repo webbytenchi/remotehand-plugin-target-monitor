@@ -6,7 +6,7 @@ It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expa
 
 ## Current release
 
-**Target Monitor v0.7.10** is the current Target Monitor release.
+**Target Monitor v0.7.11** is the current Target Monitor release.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
@@ -31,6 +31,8 @@ It preserves the proven Host Monitor Ping foundation while adding:
 - per-target system-tray graph contributions
 - runtime RemoteHand sidebar visibility control
 - independent Sound and Notification delivery controls for Ping and reusable alerts
+- The global **Enable alert sounds** preference is respected by Ping Alerts: when disabled, Ping alert transitions do not emit the sound-triggering `monitor.alert` event
+- Muting Ping alert sounds does not disable native notifications or persistent History
 - full-width responsive target cards that make better use of the available RemoteHand panel width
 - drag-to-reorder target cards with persisted plugin-owned card order and a Reset order action
 - Enable Alerts History setting that stops new History persistence without disabling alert evaluation, sound, notifications, reminders, or recovery
@@ -242,6 +244,10 @@ Alerts are transition-based. A rule becomes active once, remains active while it
 
 Optional reminders may repeat while an alert remains active.
 
+### Sound and notification delivery
+
+Sound playback and notification delivery are separate controls. The global **Enable alert sounds** preference suppresses Ping alert audio when turned off. Ping alert transitions still retain their native-notification and persistent-History behavior; muting audio does not disable monitoring, alert evaluation, or History recording.
+
 ## Alert acknowledgment
 
 When a monitored field triggers an unacknowledged alert, the target's top-bar item shows an alert badge.
@@ -436,7 +442,7 @@ The clean Windows package directory is created at:
 
 The Windows build script also creates the versioned release ZIP and checksum file directly, for example:
 
-    dist\remotehand-target-monitor-v0.7.10-windows-x86_64.zip
+    dist\remotehand-target-monitor-v0.7.11-windows-x86_64.zip
     dist\SHA256SUMS.txt
 
 Install the package directory during development, or use the versioned ZIP through RemoteHand's ZIP install flow.
@@ -457,7 +463,7 @@ Panel ID:
 
 Current release version:
 
-    0.7.10
+    0.7.11
 
 ## Lineage
 
@@ -465,7 +471,7 @@ Target Monitor starts from the validated RemoteHand Host Monitor v0.6.1 codebase
 
 Host Monitor remains frozen in its original repository as the historical predecessor.
 
-Target Monitor continues that product line as **v0.7.10**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
+Target Monitor continues that product line as **v0.7.11**, reserving `v1.0.0` for a later milestone after the broader alert-delivery architecture has matured.
 
 ## Future alert delivery
 
