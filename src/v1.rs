@@ -1840,6 +1840,106 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&MonitorStore)->Result<(),Str
         "items":[{"id":"target-monitor","visible":store.config.show_in_sidebar}]
     })})
 }
+// Public dashboard projection: never expose config, endpoint addresses/URLs,
+// HTTP bodies, extracted fields, credentials, response errors or network identity.
+fn api_target_value(m: &TargetMonitor) -> Value {
+    let latest=m.samples.last();
+    json!({
+        "id": m.target.id,
+        "name": m.target.name,
+        "enabled": m.target.enabled,
+        "pingEnabled": m.target.ping_enabled,
+        "state": m.overall_state(),
+        "pingState": m.last_state,
+        "timestamp": latest.map(|s|s.timestamp),
+        "latencyMs": latest.and_then(|s|s.latency_ms),
+        "packetLossPercent": latest.map(|s|s.packet_loss_percent),
+        "lastReachableAt": m.last_reachable_at,
+        "offlineSince": m.offline_since,
+        "tcpCheckCount": m.target.tcp_checks.iter().filter(|c|c.enabled).count(),
+        "httpCheckCount": m.target.http_checks.iter().filter(|c|c.enabled).count(),
+        "activeAlertCount": m.active_alerts.len()
+    })
+}
+
+fn api_catalog_value() -> Value {
+    json!({
+        "schemaVersion":1,
+        "timestampUnit":"unixMilliseconds",
+        "nullMeaning":"unavailable",
+        "metrics":[
+            {"key":"latencyMs","label":"Ping Latency","unit":"milliseconds","source":"targets.items","kind":"gauge","deviceType":"target"},
+            {"key":"packetLossPercent","label":"Packet Loss","unit":"percent","source":"targets.items","kind":"gauge","deviceType":"target","min":0,"max":100},
+            {"key":"state","label":"Target Status","unit":"state","source":"targets.items","kind":"status","deviceType":"target"},
+            {"key":"latencyMs","label":"Ping Latency History","unit":"milliseconds","source":"history.items","kind":"series","deviceType":"target"},
+            {"key":"packetLossPercent","label":"Packet Loss History","unit":"percent","source":"history.items","kind":"series","deviceType":"target","min":0,"max":100},
+            {"key":"reachable","label":"TCP Reachable","unit":"boolean","source":"checks.tcp","kind":"status","deviceType":"tcpCheck"},
+            {"key":"latencyMs","label":"TCP Connection Time","unit":"milliseconds","source":"checks.tcp","kind":"gauge","deviceType":"tcpCheck"},
+            {"key":"statusCode","label":"HTTP Status Code","unit":"httpStatus","source":"checks.http","kind":"number","deviceType":"httpCheck"},
+            {"key":"responseTimeMs","label":"HTTP Response Time","unit":"milliseconds","source":"checks.http","kind":"gauge","deviceType":"httpCheck"}
+        ]
+    })
+}
+
+fn api_read_value(store:&MonitorStore,view:&str,path_params:&Value)->Option<Value>{
+    let id=path_params.get("id").and_then(Value::as_str).unwrap_or("");
+    let target=||store.targets.get(id);
+    Some(match view {
+        "summary"=>{
+            let values=store.targets.values();
+            let enabled=values.clone().filter(|m|m.target.enabled).count();
+            let online=values.clone().filter(|m|m.target.enabled && m.overall_state()=="ONLINE").count();
+            let degraded=values.clone().filter(|m|m.target.enabled && m.overall_state()=="DEGRADED").count();
+            let offline=values.filter(|m|m.target.enabled && m.overall_state()=="OFFLINE").count();
+            json!({"targetCount":store.targets.len(),"enabledTargetCount":enabled,
+                "onlineTargetCount":online,"degradedTargetCount":degraded,
+                "offlineTargetCount":offline,
+                "activeAlertCount":store.targets.values().map(|m|m.active_alerts.len()).sum::<usize>(),
+                "timestamp":now_ms()})
+        },
+        "targets"=>json!({"timestamp":now_ms(),
+            "items":store.targets.values().map(api_target_value).collect::<Vec<_>>()}),
+        "target"=>api_target_value(target()?),
+        "checks"=>{
+            let m=target()?;
+            let tcp=m.target.tcp_checks.iter().filter(|c|c.enabled).map(|c|{
+                let current=m.tcp_results.get(&c.id);
+                json!({"id":c.id,"name":c.name,"enabled":c.enabled,"port":c.port,
+                    "reachable":current.map(|r|r.reachable),
+                    "latencyMs":current.and_then(|r|r.latency_ms),
+                    "timestamp":current.map(|r|r.timestamp)})
+            }).collect::<Vec<_>>();
+            let http=m.target.http_checks.iter().filter(|c|c.enabled).map(|c|{
+                let current=m.http_results.get(&c.id);
+                json!({"id":c.id,"name":c.name,"enabled":c.enabled,
+                    "statusCode":current.and_then(|r|r.status_code),
+                    "responseTimeMs":current.and_then(|r|r.response_time_ms),
+                    "healthy":current.map(|r|r.error.is_none() && r.status_code.is_some_and(|status|status < 400)),
+                    "timestamp":current.map(|r|r.timestamp)})
+            }).collect::<Vec<_>>();
+            json!({"targetId":m.target.id,"targetName":m.target.name,"tcp":tcp,"http":http})
+        },
+        "history"=>{
+            let m=target()?;
+            json!({"targetId":m.target.id,"targetName":m.target.name,
+                "items":m.samples.iter().rev().take(120).collect::<Vec<_>>()
+                    .into_iter().rev().map(|s|json!({
+                        "timestamp":s.timestamp,"latencyMs":s.latency_ms,
+                        "packetLossPercent":s.packet_loss_percent,"state":s.state
+                    })).collect::<Vec<_>>()})
+        },
+        "alerts"=>{
+            let items=store.targets.values().flat_map(|m|m.active_alerts.values().map(move |a|{
+                json!({"id":a.key,"targetId":m.target.id,"targetName":m.target.name,
+                    "name":a.rule_name,"sourceName":source_label(m,&a.source),
+                    "since":a.since,"acknowledged":a.acknowledged})
+            })).collect::<Vec<_>>();
+            json!({"timestamp":now_ms(),"items":items})
+        },
+        "catalog"=>api_catalog_value(),
+        _=>return None
+    })
+}
 fn status_value(store:&MonitorStore)->Value{json!({"targets":store.summaries(),"config":&store.config,"alerts":&store.config.alerts,"alertRules":&store.config.alert_rules,"networkIdentity":network_identity_value(&store.network_identity)})}
 
 fn main()->Result<(),String>{
@@ -2036,6 +2136,15 @@ fn main()->Result<(),String>{
                     }
                 }
             }
+            "api.read"=>{
+                let view=request.params.get("view").and_then(Value::as_str).unwrap_or("");
+                let path_params=request.params.get("pathParams").unwrap_or(&Value::Null);
+                let guard=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?;
+                match api_read_value(&guard,view,path_params){
+                    Some(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                    None=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"unknown target API view or target".into()}
+                }
+            }
             "monitor.status"=>{
                 let history=store.lock().map_err(|_|"monitor state lock poisoned".to_string())?.history.clone();
                 let _=save_history(&mut input,&output_tx,&mut host_request_id,&history);
@@ -2182,6 +2291,71 @@ fn main()->Result<(),String>{
         send_outbound(&output_tx,response)?;
     }
     drop(output_tx); let _=writer.join(); Ok(())
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    #[test]
+    fn catalog_exposes_displayhand_metrics(){
+        let catalog=api_read_value(&MonitorStore::new(),"catalog",&Value::Null).unwrap();
+        assert_eq!(catalog["schemaVersion"],1);
+        assert_eq!(catalog["timestampUnit"],"unixMilliseconds");
+        assert!(catalog["metrics"].as_array().unwrap().iter().any(|m|
+            m["source"]=="checks.http" && m["key"]=="responseTimeMs"));
+    }
+    #[test]
+    fn projections_omit_private_target_configuration(){
+        let mut store=MonitorStore::new();
+        let m=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        m.target.address="private.internal".into();
+        m.target.http_checks.push(HttpCheck{
+            id:"check".into(),name:"API".into(),url:"https://user:secret@private.internal/token".into(),
+            enabled:true,response_mode:"json".into(),regex:"secret".into(),monitor_whole_response:true,
+            detect_changes:false,discovered_fields:BTreeMap::new(),exposed_fields:vec![],
+            field_alerts:BTreeMap::new(),authentication:HttpAuthentication{
+                enabled:true,auth_type:"bearer".into(),header_name:"Authorization".into(),
+                credential:"supersecret".into(),username:"privateuser".into(),password:"privatepass".into()
+            }
+        });
+        m.http_results.insert("check".into(),HttpResult{
+            id:"check".into(),name:"API".into(),url:"https://private.internal/token".into(),
+            status_code:Some(200),response_time_ms:Some(12.0),content_type:"text/plain".into(),
+            body:"secret-body".into(),fields:BTreeMap::new(),error:None,timestamp:10
+        });
+        let params=json!({"id":DEFAULT_TARGET_ID});
+        for (view,p) in [("summary",&Value::Null),("targets",&Value::Null),("target",&params),
+            ("checks",&params),("history",&params),("alerts",&Value::Null),("catalog",&Value::Null)]{
+            let encoded=api_read_value(&store,view,p).unwrap().to_string();
+            for secret in ["private.internal","supersecret","privatepass","privateuser","secret-body","Authorization","monitorWholeResponse"]{
+                assert!(!encoded.contains(secret),"{view} leaked {secret}");
+            }
+        }
+    }
+    #[test]
+    fn unknown_target_and_view_are_rejected(){
+        let store=MonitorStore::new();
+        assert!(api_read_value(&store,"target",&json!({"id":"nonexistent"})).is_none());
+        assert!(api_read_value(&store,"checks",&json!({"id":"nonexistent"})).is_none());
+        assert!(api_read_value(&store,"history",&json!({"id":"nonexistent"})).is_none());
+        assert!(api_read_value(&store,"config",&Value::Null).is_none());
+    }
+    #[test]
+    fn bounded_history_keeps_latest_120(){
+        let mut store=MonitorStore::new();
+        let monitor=store.targets.get_mut(DEFAULT_TARGET_ID).unwrap();
+        for n in 0..130{
+            monitor.samples.push(SampleRecord{
+                timestamp:n,latency_ms:Some(n as f64),packet_loss_percent:0.0,
+                state:"ONLINE".into()
+            });
+        }
+        let result=api_read_value(&store,"history",&json!({"id":DEFAULT_TARGET_ID})).unwrap();
+        let items=result["items"].as_array().unwrap();
+        assert_eq!(items.len(),120);
+        assert_eq!(items[0]["timestamp"],10);
+        assert_eq!(items[119]["timestamp"],129);
+    }
 }
 
 #[cfg(test)]
