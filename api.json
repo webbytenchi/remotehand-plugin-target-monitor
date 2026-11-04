@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "basePath": "/api/v1/target-monitor",
+  "routes": [
+    {
+      "path": "/",
+      "view": "summary",
+      "summary": "Target Monitor overview",
+      "description": "Configured and enabled target counts, availability and active alert counts."
+    },
+    {
+      "path": "/targets",
+      "view": "targets",
+      "summary": "Targets",
+      "description": "Sanitized, human-readable target statuses and ping metrics."
+    },
+    {
+      "path": "/targets/{id}",
+      "view": "target",
+      "summary": "Target status",
+      "description": "Single target with current ping status, availability and counts."
+    },
+    {
+      "path": "/targets/{id}/checks",
+      "view": "checks",
+      "summary": "TCP and HTTP check states",
+      "description": "Names, outcomes, latency and status codes, without URLs or responses."
+    },
+    {
+      "path": "/targets/{id}/history",
+      "view": "history",
+      "summary": "Target ping history",
+      "description": "Last 120 ping samples with numeric latency and packet loss."
+    },
+    {
+      "path": "/alerts",
+      "view": "alerts",
+      "summary": "Active Target Monitor alerts",
+      "description": "Active rule names, target references and acknowledgment states, without extracted response values."
+    },
+    {
+      "path": "/catalog",
+      "view": "catalog",
+      "summary": "Target monitoring metric catalog",
+      "description": "Metric keys, units and sources for DisplayHand and Grafana."
+    }
+  ]
+}

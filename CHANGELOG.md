@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.12 - 2026-11-05
+
+### Added
+- Seven authenticated, read-only HTTP API routes through the generic RemoteHand Plugin API Gateway: overview, targets, single target, TCP/HTTP checks, bounded Ping history, active alerts, and a dashboard metric catalog.
+- Optional `api.json` route descriptor shipped in the Windows plugin package; the plugin handles generic `api.read` IPC requests without hardcoded new Core routes.
+- Stable target/check IDs, human-readable target/check labels, numeric latencies and packet loss, UNIX-millisecond timestamps, and JSON null for unavailable measurements.
+- Dashboard metric metadata for DisplayHand and external visualization integrations.
+
+### Improved
+- Per-target TCP and HTTP observations expose check results, connection/response times, status codes, reachability and health state, without endpoint URLs or response bodies.
+- The target history API is bounded to the latest 120 Ping samples.
+- API projections exclude authentication secrets, target addresses, HTTP bodies, extracted fields, private configuration, network identity and raw error data.
+- OpenAPI path-variable IDs work with the generic Core explorer; multiple targets can be selected by stable ID.
+
+### Fixed
+- Dynamic per-target routing avoids literal `{id}` lookups when the API explorer supplies a valid target ID.
+- Disabling Target Monitor removes its API routes while preserving other enabled plugins' routes.
+
+### Compatibility
+- Plugin API remains **v1**; existing monitoring, alerts, saved settings, surfaces, HTTP authentication and notifications remain supported.
+- No Target Monitor configuration migration is required.
+- Legacy RemoteHand Core versions can ignore optional `api.json`; HTTP routes require Core's generic Plugin API Gateway v1.
+- This plugin release does not require new RemoteHand Core changes beyond the existing generic gateway.
+
+### Verification
+- Windows unit tests: **75 passed, 0 failed** on the feature branch.
+- Optimized Windows build and test ZIP packaging passed; optional `api.json` and all seven routes verified in ZIP.
+- Authenticated live GETs returned HTTP 200 for overview, targets, per-target status/checks/history, alerts and catalog.
+- Operator validated real TCP reachability and HTTP 200 measurements with BitAxe Gamma 601 and other configured targets.
+- No-token access to a target API route returned **HTTP 401 Unauthorized**.
+- Disabling Target Monitor removed its routes from route discovery, leaving System Monitor untouched; operator re-enabled Target Monitor afterward.
+- Final exact-main build, release checksum, tag and publication are separate post-merge steps.
+
+
 ## 0.7.11 - 2026-10-11
 
 ### Fixed
