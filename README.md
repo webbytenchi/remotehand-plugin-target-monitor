@@ -4,6 +4,32 @@ Target Monitor is a RemoteHand plugin for monitoring hosts, services, and HTTP/H
 
 It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expands monitoring beyond ICMP latency into TCP services, HTTP/HTTPS endpoints, reusable alerts, native notifications, richer history, and configurable RemoteHand surfaces.
 
+## Proposed Target Monitor Dashboard API (feature branch; not yet released)
+
+Target Monitor can declare public, authenticated, **read-only** monitoring routes using the optional `api.json` descriptor and the existing RemoteHand Core Plugin API Gateway v1. All API data is computed inside Target Monitor through the generic `api.read` plugin IPC handler, so adding these routes requires **no changes to RemoteHand Core**.
+
+This feature is undergoing validation on `emma/target-monitor-api-v1`. Its manifest remains v0.7.11 for testing; do not publish it as an already-released version. Older RemoteHand Core versions ignore the optional `api.json` file and continue running the existing plugin UI.
+
+| GET route | Contents |
+| --- | --- |
+| `/api/v1/target-monitor` | Timestamp and configured/enabled, online/degraded/offline target counts, and active-alert count |
+| `/api/v1/target-monitor/targets` | ID, human-readable name, enabled state, status, ping latency, packet loss, timestamps and check/alert counts per target |
+| `/api/v1/target-monitor/targets/{id}` | Current status and measurements for one target |
+| `/api/v1/target-monitor/targets/{id}/checks` | Enabled TCP and HTTP check names, IDs, port where relevant, reachability, response time, HTTP status and time of latest results |
+| `/api/v1/target-monitor/targets/{id}/history` | Latest 120 ping samples, with latency, packet loss, state, and timestamp |
+| `/api/v1/target-monitor/alerts` | Current active rule alerts with target name, rule/source labels, acknowledgment and start time |
+| `/api/v1/target-monitor/catalog` | Dashboard metric definitions: stable JSON field names, labels, raw units, data sources and visualization kinds |
+
+### Data contract for DisplayHand and Grafana
+
+- Times use **Unix milliseconds**; latency and response times use **milliseconds**; packet loss uses **percent** (0–100). Unknown measurements remain JSON `null` rather than zero. HTTP check health is `null` until a measurement exists.
+- Dashboard clients should bind by target `id` rather than array order. Check `id` is scoped to its target; names may change as users rename devices. `/catalog` describes generic fields. A future Grafana adapter can transform these JSON values into its preferred series; this plugin does not expose Prometheus format.
+- `/targets` includes disabled targets for configuration awareness; the summary counts only enabled targets in online/degraded/offline totals. `/checks` includes only enabled checks.
+- `/history` is bounded to 120 ping samples. Historical events (including archived alert events) are separate from this endpoint; `/alerts` contains only live active rule alerts.
+- The API never returns saved HTTP credentials (Bearer, API Key, Basic), target host addresses, endpoint URLs, HTTP response bodies or extracted fields, user-defined request configuration, network interface identities, internal error details, or raw alert values that could contain secrets. Even a read-only API requires trusted bearer-token handling and HTTPS where practical.
+- Unknown target IDs are rejected by the plugin; invalid API views are not exposed. API route availability depends on the plugin being enabled.
+- These are **proposed feature-branch endpoints** until Windows tests and live endpoint checks pass. Do not merge, bump the release version or publish until the operator accepts the tested behavior.
+
 ## Current release
 
 **Target Monitor v0.7.11** is the current Target Monitor release.
