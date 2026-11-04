@@ -7,7 +7,7 @@
 - Preserve native notifications and persistent History when Ping alert audio is muted; monitoring and alert evaluation remain enabled.
 
 ### Verification
-- Added regression coverage for muted Ping Alerts with notifications enabled; Windows build and runtime validation are pending.
+- Added regression coverage for muted Ping Alerts with notifications enabled. The operator reports using the installed v0.7.11 plugin on Windows for an extended period without reported issues. This is field-use acceptance, not a substitute for a fresh tagged-source build and release-artifact verification.
 
 ## 0.7.10 - 2026-10-08
 
