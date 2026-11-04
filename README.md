@@ -4,11 +4,11 @@ Target Monitor is a RemoteHand plugin for monitoring hosts, services, and HTTP/H
 
 It evolves from the validated RemoteHand Host Monitor v0.6.1 foundation and expands monitoring beyond ICMP latency into TCP services, HTTP/HTTPS endpoints, reusable alerts, native notifications, richer history, and configurable RemoteHand surfaces.
 
-## Proposed Target Monitor Dashboard API (feature branch; not yet released)
+## Target Monitor Dashboard API v1 (v0.7.12)
 
 Target Monitor can declare public, authenticated, **read-only** monitoring routes using the optional `api.json` descriptor and the existing RemoteHand Core Plugin API Gateway v1. All API data is computed inside Target Monitor through the generic `api.read` plugin IPC handler, so adding these routes requires **no changes to RemoteHand Core**.
 
-This feature is undergoing validation on `emma/target-monitor-api-v1`. Its manifest remains v0.7.11 for testing; do not publish it as an already-released version. Older RemoteHand Core versions ignore the optional `api.json` file and continue running the existing plugin UI.
+Introduced in Target Monitor v0.7.12 after Windows acceptance testing. Older RemoteHand Core versions ignore the optional `api.json` file and continue running the existing plugin UI. The API requires a Core build with the generic Plugin API Gateway; the gateway-enabled Core branch is independent of this plugin release.
 
 | GET route | Contents |
 | --- | --- |
@@ -28,11 +28,11 @@ This feature is undergoing validation on `emma/target-monitor-api-v1`. Its manif
 - `/history` is bounded to 120 ping samples. Historical events (including archived alert events) are separate from this endpoint; `/alerts` contains only live active rule alerts.
 - The API never returns saved HTTP credentials (Bearer, API Key, Basic), target host addresses, endpoint URLs, HTTP response bodies or extracted fields, user-defined request configuration, network interface identities, internal error details, or raw alert values that could contain secrets. Even a read-only API requires trusted bearer-token handling and HTTPS where practical.
 - Unknown target IDs are rejected by the plugin; invalid API views are not exposed. API route availability depends on the plugin being enabled.
-- These are **proposed feature-branch endpoints** until Windows tests and live endpoint checks pass. Do not merge, bump the release version or publish until the operator accepts the tested behavior.
+- Acceptance completed on Windows: 75 Rust unit tests passed; optimized Windows package built successfully; all seven read-only routes returned HTTP 200 with authenticated requests; TCP and HTTP live check results, per-target history and path parameters validated; requests without authorization returned HTTP 401; disabling Target Monitor removed its routes while System Monitor routes remained unaffected. Re-enable restored Target Monitor monitoring. Exact-main release build and final artifact checksum must be verified after merge.
 
 ## Current release
 
-**Target Monitor v0.7.11** is the current Target Monitor release.
+**Target Monitor v0.7.12** includes the seven-route, authenticated, read-only monitoring API and retains all v0.7.11 functionality. See the changelog for compatibility and acceptance details.
 
 It preserves the proven Host Monitor Ping foundation while adding:
 
